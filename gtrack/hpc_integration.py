@@ -380,20 +380,18 @@ class SeafloorAgeTracker:
                 zip(self._lats, self._lons)
             )
 
-            # Reconstruct using C++ backend.
-            # Note: TopologicalModel.reconstruct_geometry requires that
-            # (oldest_time - youngest_time) is an integer multiple of
-            # time_increment.  With time_step=1.0 and integer geological
-            # ages this is always satisfied.  The int() casts ensure this
-            # constraint holds even if times have float rounding noise.
-            # This is separate from the continental polygon reconstruction
-            # which uses pygplates.reconstruct() and supports arbitrary
-            # float times.
+            # Each outer iteration is a single pygplates reconstruction step
+            # of length `span`, so we pass `time_increment=span` and the
+            # divisibility constraint `(initial_time - youngest_time) /
+            # time_increment == 1` is satisfied by construction. This lets
+            # any positive float time_step work, including the clamped final
+            # step where span may be smaller than the nominal time_step.
+            span = time - next_time
             reconstructed_time_span = self._topological_model.reconstruct_geometry(
                 points,
-                initial_time=int(time),
-                youngest_time=int(next_time),
-                time_increment=int(self._config.time_step),
+                initial_time=time,
+                youngest_time=next_time,
+                time_increment=span,
                 deactivate_points=pygplates.ReconstructedGeometryTimeSpan.DefaultDeactivatePoints(
                     threshold_velocity_delta=self._config.velocity_delta_threshold_cm_yr,
                     threshold_distance_to_boundary=self._config.distance_threshold_per_myr,
@@ -403,7 +401,7 @@ class SeafloorAgeTracker:
 
             # Get reconstructed points (inactive points are None)
             reconstructed_points = reconstructed_time_span.get_geometry_points(
-                int(next_time), return_inactive_points=True
+                next_time, return_inactive_points=True
             )
 
             # Update coordinates and ages, removing inactive points
