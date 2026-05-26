@@ -77,7 +77,7 @@ class SeafloorAgeTracker:
         continental_polygons: Optional[str] = None,
         config: Optional[TracerConfig] = None,
     ):
-        from .geometry import ensure_list
+        from .geometry import ensure_list, load_features
 
         self._config = config if config else TracerConfig()
 
@@ -94,10 +94,8 @@ class SeafloorAgeTracker:
         # Load rotation model
         self._rotation_model = pygplates.RotationModel(rotation_files)
 
-        # Load topology features
-        self._topology_features = []
-        for f in topology_files:
-            self._topology_features.extend(pygplates.FeatureCollection(f))
+        # Load topology features (accepts single filename, list, or features)
+        self._topology_features = load_features(topology_files)
 
         # Create TopologicalModel for C++ backend reconstruction
         self._topological_model = pygplates.TopologicalModel(

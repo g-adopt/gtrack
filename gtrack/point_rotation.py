@@ -641,7 +641,7 @@ class PointRotator:
         static_polygons: Optional[str] = None
     ):
         import pygplates
-        from .geometry import ensure_list
+        from .geometry import ensure_list, load_features
 
         # Handle single file or Path as list
         rotation_files = ensure_list(rotation_files)
@@ -658,9 +658,12 @@ class PointRotator:
         else:
             self.topology_features = None
 
-        # Load static polygons if provided
+        # Load static polygons if provided. Accept a single filename, a list of
+        # filenames, or pre-built features — same flexibility as the rotation
+        # and topology arguments above (a bare list of filenames would
+        # otherwise reach pygplates as a sequence of features and be rejected).
         if static_polygons is not None:
-            self.static_polygons = pygplates.FeatureCollection(static_polygons)
+            self.static_polygons = load_features(static_polygons)
         else:
             self.static_polygons = None
 

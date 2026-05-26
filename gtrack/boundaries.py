@@ -11,6 +11,7 @@ import pygplates
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
+from .geometry import load_features as _load_features
 from .spatial import find_polygons
 
 
@@ -114,11 +115,14 @@ class ContinentalPolygonCache:
         rotation_model: pygplates.RotationModel,
         max_cache_size: int = 10,
     ):
-        # Load continental polygons
-        if isinstance(continental_polygons, str):
-            self._polygon_features = pygplates.FeatureCollection(continental_polygons)
-        else:
-            self._polygon_features = continental_polygons
+        # Load continental polygons. Accept a single filename, a list of
+        # filenames, a pre-built FeatureCollection, or a sequence of features —
+        # the same flexibility rotation_files/topology_files already have via
+        # ensure_list. A bare list of filename strings must NOT be handed
+        # straight to pygplates, which reads it as a sequence of features and
+        # raises "Expected an optional filename, or sequence of features, or a
+        # single feature".
+        self._polygon_features = _load_features(continental_polygons)
 
         self.rotation_model = rotation_model
         self.max_cache_size = max_cache_size
