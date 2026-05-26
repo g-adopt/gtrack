@@ -51,6 +51,51 @@ def ensure_list(x):
     return list(x)
 
 
+def load_features(polygons):
+    """Build a single ``pygplates.FeatureCollection`` from a flexible input.
+
+    Accepts whatever a user is likely to pass for a polygon/feature argument:
+    a single filename (str/Path), a list of filenames, an already-built
+    ``FeatureCollection``, a single feature, or a sequence of features.
+    Filenames are read into feature collections and merged; features are added
+    directly.
+
+    This exists because pygplates only accepts a single filename, a single
+    feature, or a sequence of *features* — handing it a list of filename
+    strings raises "Expected an optional filename, or sequence of features, or
+    a single feature". Routing every polygon argument through here gives the
+    same str/list flexibility that ``ensure_list`` gives the rotation and
+    topology file arguments.
+
+    Parameters
+    ----------
+    polygons : str, Path, list, pygplates.FeatureCollection, pygplates.Feature, or sequence of features
+        The polygon/feature input to normalise.
+
+    Returns
+    -------
+    pygplates.FeatureCollection
+        A single collection holding every feature from the input.
+    """
+    import pygplates
+
+    if isinstance(polygons, pygplates.FeatureCollection):
+        return polygons
+
+    # A lone Feature is iterable (over its properties), so ensure_list would
+    # tear it apart. Wrap it so it is added as a single feature instead.
+    if isinstance(polygons, pygplates.Feature):
+        polygons = [polygons]
+
+    collection = pygplates.FeatureCollection()
+    for item in ensure_list(polygons):
+        if isinstance(item, (str, Path)):
+            collection.add(pygplates.FeatureCollection(str(item)))
+        else:
+            collection.add(item)
+    return collection
+
+
 def LatLon2XYZ(latlon):
     """
     Convert geographic coordinates (lat, lon) to Cartesian coordinates (x, y, z).

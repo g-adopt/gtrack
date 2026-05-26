@@ -47,20 +47,17 @@ class PolygonFilter:
         rotation_files: Union[str, List[str]]
     ):
         import pygplates
-        from .geometry import ensure_list
+        from .geometry import ensure_list, load_features
         from .boundaries import ContinentalPolygonCache
 
         # Handle single file or Path as list
-        polygon_files = ensure_list(polygon_files)
         rotation_files = ensure_list(rotation_files)
 
         self.rotation_model = pygplates.RotationModel(rotation_files)
 
-        # Load polygon features
-        self.polygon_features = pygplates.FeatureCollection()
-        for file in polygon_files:
-            features = pygplates.FeatureCollection(file)
-            self.polygon_features.add(features)
+        # Load polygon features (accepts a single filename, a list of
+        # filenames, prebuilt features, or a FeatureCollection).
+        self.polygon_features = load_features(polygon_files)
 
         # Use the same containment test as ContinentalPolygonCache to ensure
         # consistent results between ocean excision and continental filtering.
