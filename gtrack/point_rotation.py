@@ -521,6 +521,53 @@ def _rotate_points_batch(
     return rotated_lats, rotated_lons
 
 
+def _unreconstructable_plate_ids(
+    plate_ids: np.ndarray,
+    rotation_model: pygplates.RotationModel,
+    time: float
+) -> set:
+    """
+    Find plate IDs that are not part of the plate circuit at a given time.
+
+    A plate (typically an accreted terrane or a young deforming block) only
+    exists back to its appearance age. Before that age its rotation circuit to
+    the anchor plate is incomplete, and ``rotation_model.get_rotation`` silently
+    returns an *identity* rotation. Applying that identity leaves the point
+    pinned at its present-day position while the rest of its continent drifts
+    away, producing points stranded in open ocean with no polygon around them.
+
+    This uses the reconstruction tree at ``time`` to ask, unambiguously, whether
+    each plate is connected to the anchor. A plate with no edge in the tree (and
+    which is not the anchor itself) does not exist at ``time``. This is distinct
+    from a plate that exists but happens to be stationary (identity rotation but
+    a valid tree edge), which must NOT be flagged.
+
+    Parameters
+    ----------
+    plate_ids : np.ndarray
+        Plate IDs to test, shape (N,).
+    rotation_model : pygplates.RotationModel
+        Rotation model.
+    time : float
+        Reconstruction time in Ma.
+
+    Returns
+    -------
+    set of int
+        The subset of unique plate IDs that are not reconstructable at ``time``.
+    """
+    tree = rotation_model.get_reconstruction_tree(time)
+    anchor = tree.get_anchor_plate_id()
+    bad = set()
+    for pid in np.unique(plate_ids):
+        pid = int(pid)
+        if pid == anchor:
+            continue
+        if tree.get_edge(pid) is None:
+            bad.add(pid)
+    return bad
+
+
 def _move_points_batched(
     xyz: np.ndarray,
     rotation_model: pygplates.RotationModel,
@@ -772,6 +819,13 @@ class PointRotator:
         Uses batched rotation operations for performance (10-50x speedup
         by grouping points by plate_id).
 
+        Points whose plate is not part of the plate circuit at ``to_age`` (e.g.
+        accreted terranes that have not formed yet at that age) are dropped, with
+        a warning. Their rotation circuit to the anchor is incomplete, so
+        pygplates returns an identity rotation; keeping them would silently leave
+        them at their ``from_age`` position while the rest of their continent
+        drifts away, so they are removed instead.
+
         Parameters
         ----------
         cloud : PointCloud
@@ -787,7 +841,8 @@ class PointRotator:
         Returns
         -------
         PointCloud
-            Rotated points with same properties.
+            Rotated points with same properties. May have fewer points than the
+            input when some plates do not exist at ``to_age``.
 
         Raises
         ------
@@ -810,6 +865,27 @@ class PointRotator:
                 "Cloud must have plate_ids assigned. "
                 "Call assign_plate_ids() first."
             )
+
+        # Drop points whose plate does not exist at the target age. Without this,
+        # pygplates returns an identity rotation for those plates and the points
+        # stay pinned at their from_age position (stranded), instead of vanishing
+        # as the terrane they belong to should before its appearance age.
+        if from_age != to_age:
+            bad = _unreconstructable_plate_ids(
+                cloud.plate_ids, self.rotation_model, to_age
+            )
+            if bad:
+                bad_mask = np.isin(cloud.plate_ids, list(bad))
+                n_bad = int(bad_mask.sum())
+                warnings.warn(
+                    f"{n_bad} points ({100*n_bad/cloud.n_points:.1f}%) belong to "
+                    f"plates {sorted(bad)} that are not part of the plate circuit "
+                    f"at {to_age} Ma (e.g. terranes not yet formed). "
+                    f"These points are dropped rather than left stranded at the "
+                    f"{from_age} Ma position.",
+                    UserWarning
+                )
+                cloud = cloud.subset(~bad_mask)
 
         # Apply batched rotation (groups by plate_id for efficiency)
         rotated_xyz = _move_points_batched(
