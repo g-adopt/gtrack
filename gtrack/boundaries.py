@@ -148,7 +148,28 @@ class ContinentalPolygonCache:
             self._cache.move_to_end(time)
             return self._cache[time]
 
-        # Reconstruct polygons
+        # Continental polygons are reconstructed RIGIDLY (per-feature Euler pole
+        # via pygplates.reconstruct), NOT topologically. This is the same
+        # reconstruction class that PointRotator moved away from: a continent
+        # feature whose plate id has no edge in the rotation tree at ``time``
+        # (no rigid sequence to the anchor at that age) is identity-reconstructed
+        # (left at its present position) instead of being carried by plate
+        # motion. On the Zahirovic 2022 continents (848 features / 426 unique
+        # ids) this affects 171/848 features at 50 Ma, 189/848 at 100 Ma and
+        # 214/848 at 200 Ma (quantified by
+        # examples/Cratons_M3_B/phase4_boundary_audit.py; see CHANGE-PLAN.md
+        # Phase 4). At time=0 reconstruction is identity for every feature, so
+        # the limitation only bites at ages > 0.
+        #
+        # DECISION (Phase 4): keep this rigid. Reasons: (1) the tracker's
+        # continental excision must remain byte-identical to GPlately's
+        # SeafloorGrid, which also reconstructs continents rigidly — matching
+        # GPlately is a hard invariant (CLAUDE.md design decision #1); (2) the
+        # craton/crust containment that motivated the PointRotator fix runs at
+        # at_age=0, i.e. identity reconstruction, so it is unaffected. Making
+        # this topology-consistent is deferred as a documented limitation. The
+        # current behaviour is pinned by tests/test_boundaries_reconstruction.py
+        # so any future change is deliberate rather than accidental.
         reconstructed = []
         pygplates.reconstruct(
             self._polygon_features,

@@ -8,6 +8,23 @@ This module provides the core API for:
 The API uses Cartesian XYZ coordinates internally for compatibility with gadopt,
 while interfacing with pygplates using lat/lon coordinates.
 
+Rotation engine
+---------------
+``PointRotator`` advects points with a single, deforming-aware engine:
+``pygplates.TopologicalModel.reconstruct_geometry``. It resolves topologies —
+rigid plates *and* deforming networks — and moves each point by whatever plate
+or network it sits in, exactly as the ocean ``SeafloorAgeTracker`` does. This
+replaces the earlier rigid, per-plate-id engine, which silently dropped points
+whose static-polygon plate id had no rigid rotation sequence to the anchor and
+which mis-rotated the (majority) continental points whose static-polygon id
+disagreed with the topology id. See ``CHANGE-PLAN.md`` for the evidence.
+
+Consequences of the single engine:
+- Motion no longer depends on ``plate_ids``. ``rotate`` neither requires nor
+  drops points; with ``deactivate_points=None`` every input point is returned.
+- ``plate_ids`` are a *labelling* output only (``assign_plate_ids``), no longer
+  a motion input, and default to the topology-consistent partition.
+
 Terminology:
 - geological_age (or just 'age'): Time before present in Ma (0 = present, 100 = 100 Myr ago)
 - from_age / to_age: Source and target geological ages for rotation
@@ -455,11 +472,16 @@ def _get_plate_ids(
     # Convert XYZ to lat/lon
     lats, lons = XYZ2LatLon(xyz)
 
-    # Create point features for partitioning
+    # Create point features for partitioning. Tag each with its input index in
+    # the feature name: partition_into_plates does NOT preserve input order (it
+    # groups partitioned features ahead of unpartitioned ones), so we must map
+    # results back to input positions ourselves or the returned plate ids would
+    # be misaligned with the points.
     point_features = []
-    for lat, lon in zip(lats, lons):
+    for i, (lat, lon) in enumerate(zip(lats, lons)):
         point_feature = pygplates.Feature()
         point_feature.set_geometry(pygplates.PointOnSphere(lat, lon))
+        point_feature.set_name(str(i))
         point_features.append(point_feature)
 
     # Partition into plates
@@ -471,12 +493,27 @@ def _get_plate_ids(
         properties_to_copy=[pygplates.PartitionProperty.reconstruction_plate_id]
     )
 
-    # Extract plate IDs
-    plate_ids = np.array([
-        f.get_reconstruction_plate_id() for f in assigned_point_features
-    ], dtype=int)
+    # Extract plate IDs, restoring input order via the index tag.
+    plate_ids = np.zeros(len(lats), dtype=int)
+    for f in assigned_point_features:
+        idx = int(f.get_name())
+        plate_ids[idx] = f.get_reconstruction_plate_id()
 
     return plate_ids
+
+
+# =============================================================================
+# NON-PRODUCTION rigid helpers — retained for regression tests ONLY.
+#
+# `_rotate_points_batch`, `_move_points_batched` and `_unreconstructable_plate_ids`
+# implement the *old* rigid, per-plate-id rotation engine. Production `rotate`
+# is now topological (`PointRotator._advect_topological`) and does NOT use any of
+# these. They are kept because the regression suite needs them to (a) document
+# the old drop behaviour that the new engine fixes and (b) assert that
+# topological advection equals rigid rotation when fed the topology's own plate
+# ids (the decisive Phase 0 consistency check). Do NOT rewire them into
+# `rotate` — that would resurrect the drop/mismatch bug.
+# =============================================================================
 
 
 def _rotate_points_batch(
@@ -646,38 +683,41 @@ class PointRotator:
     This class provides the main API for rotating user-provided points
     according to plate tectonic reconstructions.
 
+    Motion is deforming-aware: points are advected with
+    ``pygplates.TopologicalModel.reconstruct_geometry``, resolving rigid plates
+    and deforming networks, exactly like the ocean tracker. Motion does not
+    depend on ``plate_ids`` and no point is ever silently dropped.
+
     Key Features:
     - Cartesian XYZ internal representation (matches gadopt)
     - Properties stored separately from positions and preserved during rotation
-    - Batched rotation for performance (10-50x speedup by grouping by plate_id)
-    - Handles undefined plates with warnings
+    - Single topological engine (no rigid per-plate fallback)
+    - No silent drops: ``rotate`` with ``deactivate_points=None`` returns every
+      input point
 
     Parameters
     ----------
     rotation_files : list of str
         Paths to rotation model files (.rot).
-    topology_files : list of str, optional
-        Paths to topology/plate boundary files (.gpmlz).
-        Used for partitioning if static_polygons not provided.
+    topology_files : list of str
+        Paths to topology/plate boundary files (.gpml/.gpmlz). **Required** —
+        the topological engine is built from these. A clear ``ValueError`` is
+        raised if they are absent.
     static_polygons : str, optional
-        Path to static polygons for plate ID assignment.
-        If None, uses topology_files for partitioning.
+        Path to static polygons. Used only for the optional
+        ``assign_plate_ids(source="static")`` labelling path, never for motion.
 
     Examples
     --------
     >>> rotator = PointRotator(
     ...     rotation_files=['rotations.rot'],
     ...     topology_files=['topologies.gpmlz'],
-    ...     static_polygons='static_polygons.gpmlz'
     ... )
     >>>
     >>> # Load user points
     >>> cloud = PointCloud.from_latlon(my_latlon_array)
     >>>
-    >>> # Assign plate IDs at present day
-    >>> cloud = rotator.assign_plate_ids(cloud, at_age=0.0)
-    >>>
-    >>> # Rotate to 50 Ma
+    >>> # Rotate to 50 Ma (no plate_ids needed — motion is topological)
     >>> rotated = rotator.rotate(cloud, from_age=0.0, to_age=50.0)
     """
 
@@ -696,41 +736,70 @@ class PointRotator:
 
         self.rotation_model = pygplates.RotationModel(rotation_files)
 
-        # Load topology features if provided
-        if topology_files:
-            self.topology_features = pygplates.FeatureCollection()
-            for file in topology_files:
-                features = pygplates.FeatureCollection(file)
-                self.topology_features.add(features)
-        else:
-            self.topology_features = None
+        # Topology features are required — the deforming-aware engine is built
+        # from them. Without them there is no motion path (the old rigid,
+        # static-polygon-driven path has been removed; see the module docstring
+        # and CHANGE-PLAN.md).
+        if not topology_files:
+            raise ValueError(
+                "topology_files is required: PointRotator advects points with a "
+                "topological model built from the plate-boundary/network files. "
+                "Pass the same topology files you pass to SeafloorAgeTracker."
+            )
+        self.topology_features = load_features(topology_files)
+
+        # Build the topological model once (mirrors SeafloorAgeTracker).
+        self._topological_model = pygplates.TopologicalModel(
+            self.topology_features, self.rotation_model
+        )
 
         # Load static polygons if provided. Accept a single filename, a list of
         # filenames, or pre-built features — same flexibility as the rotation
-        # and topology arguments above (a bare list of filenames would
-        # otherwise reach pygplates as a sequence of features and be rejected).
+        # and topology arguments above. These are only used for the optional
+        # static-polygon labelling path in ``assign_plate_ids``.
         if static_polygons is not None:
             self.static_polygons = load_features(static_polygons)
         else:
             self.static_polygons = None
 
-        # Ensure we have some features for partitioning
-        if self.static_polygons is None and self.topology_features is None:
-            raise ValueError(
-                "Either topology_files or static_polygons must be provided "
-                "for plate ID assignment."
-            )
+    def _topology_plate_ids(self, xyz: np.ndarray, at_age: float) -> np.ndarray:
+        """Assign plate ids by partitioning against the *resolved topologies*.
+
+        This yields the plate/network id that the topological engine actually
+        moves each point by, so labels are consistent with motion. Points that
+        fall in no resolved topology get 0.
+        """
+        from .geometry import XYZ2LatLon
+
+        lats, lons = XYZ2LatLon(xyz)
+        snapshot = pygplates.TopologicalSnapshot(
+            self.topology_features, self.rotation_model, at_age
+        )
+        resolved = snapshot.get_resolved_topologies()
+        partitioner = pygplates.PlatePartitioner(resolved, self.rotation_model)
+
+        plate_ids = np.zeros(len(lats), dtype=int)
+        for i, (lat, lon) in enumerate(zip(lats, lons)):
+            located = partitioner.partition_point(pygplates.PointOnSphere(lat, lon))
+            if located is not None:
+                plate_ids[i] = located.get_feature().get_reconstruction_plate_id()
+        return plate_ids
 
     def assign_plate_ids(
         self,
         cloud: PointCloud,
         at_age: float,
-        use_static_polygons: bool = True,
-        remove_undefined: bool = True,
-        partitioning_features: Optional["pygplates.FeatureCollection"] = None
+        source: str = "topology",
+        remove_undefined: bool = False,
+        partitioning_features: Optional["pygplates.FeatureCollection"] = None,
+        use_static_polygons: Optional[bool] = None,
     ) -> PointCloud:
         """
         Assign plate IDs to points based on their positions.
+
+        Plate IDs are a *labelling convenience only* — an output property. They
+        are no longer a motion input: ``rotate`` advects points topologically
+        and does not consult ``plate_ids``. Assigning them is therefore optional.
 
         Parameters
         ----------
@@ -739,20 +808,23 @@ class PointRotator:
         at_age : float
             Geological age at which to assign plate IDs (Ma).
             Use 0.0 for present-day positions.
-        use_static_polygons : bool, default=True
-            If True and static_polygons are loaded, use them for assignment.
-            Otherwise use topology_features. Ignored if partitioning_features
-            is provided.
-        remove_undefined : bool, default=True
-            If True, remove points with undefined plate IDs (plate_id=0)
-            and emit a warning.
-            If False, keep points with plate_id=0.
+        source : {"topology", "static"}, default="topology"
+            "topology" partitions against the resolved topologies (rigid plates
+            and deforming networks), so the assigned id matches what the engine
+            moves the point by. "static" uses the static polygons passed at
+            construction (back-compat; requires ``static_polygons``). Ignored if
+            ``partitioning_features`` is given.
+        remove_undefined : bool, default=False
+            If True, remove points with undefined plate IDs (plate_id=0) and emit
+            a warning. Default is False: since ids are labels, dropping points
+            here would silently shrink the cloud. Left for callers that
+            explicitly want the old behaviour.
         partitioning_features : pygplates.FeatureCollection, optional
-            Explicit polygon features to use for plate ID assignment.
-            When provided, overrides use_static_polygons. Use this to
-            assign plate IDs from the same polygon set used for containment
-            filtering (e.g., continental polygons), ensuring that rotated
-            points stay aligned with the polygon boundaries.
+            Explicit polygon features to use for plate ID assignment, overriding
+            ``source``. Partitioned with ``partition_into_plates``.
+        use_static_polygons : bool, optional
+            Deprecated back-compat alias. If True, equivalent to
+            ``source="static"``.
 
         Returns
         -------
@@ -765,6 +837,10 @@ class PointRotator:
         UserWarning
             If any points have undefined plate IDs.
         """
+        # Back-compat: use_static_polygons=True maps to source="static".
+        if use_static_polygons:
+            source = "static"
+
         # Validate explicit partitioning features
         if partitioning_features is not None:
             if not isinstance(partitioning_features, pygplates.FeatureCollection):
@@ -772,17 +848,24 @@ class PointRotator:
                     f"partitioning_features must be a pygplates.FeatureCollection, "
                     f"got {type(partitioning_features).__name__}"
                 )
-        elif use_static_polygons and self.static_polygons is not None:
-            partitioning_features = self.static_polygons
+            plate_ids = _get_plate_ids(
+                cloud.xyz, partitioning_features, self.rotation_model, at_age
+            )
+        elif source == "static":
+            if self.static_polygons is None:
+                raise ValueError(
+                    'assign_plate_ids(source="static") requires static_polygons '
+                    "to have been passed to PointRotator."
+                )
+            plate_ids = _get_plate_ids(
+                cloud.xyz, self.static_polygons, self.rotation_model, at_age
+            )
+        elif source == "topology":
+            plate_ids = self._topology_plate_ids(cloud.xyz, at_age)
         else:
-            partitioning_features = self.topology_features
-
-        plate_ids = _get_plate_ids(
-            cloud.xyz,
-            partitioning_features,
-            self.rotation_model,
-            at_age
-        )
+            raise ValueError(
+                f'source must be "topology" or "static", got {source!r}'
+            )
 
         # Check for undefined plates (plate_id = 0)
         undefined_mask = (plate_ids == 0)
@@ -806,106 +889,157 @@ class PointRotator:
 
         return result
 
+    def _advect_topological(
+        self,
+        lats: np.ndarray,
+        lons: np.ndarray,
+        from_age: float,
+        to_age: float,
+        time_step: float = 1.0,
+        deactivate_points=None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Advect points from ``from_age`` to ``to_age`` with the topological model.
+
+        Mirrors the SeafloorAgeTracker stepping loop. Returns
+        ``(out_lat, out_lon, active)``. Inactive points (only possible when a
+        deactivation policy is supplied) come back as NaN with ``active=False``.
+
+        ``reconstruct_geometry`` requires ``(oldest_time - youngest_time)`` to be
+        an integer multiple of ``time_increment``; we derive an integer
+        ``n_steps`` and an exact increment ``span / n_steps`` to satisfy it.
+        """
+        if not (time_step > 0):
+            raise ValueError(
+                f"time_step must be a positive number, got {time_step!r}. "
+                "It sets the internal stepping granularity of the topological "
+                "reconstruction (Myr)."
+            )
+
+        lats = np.asarray(lats, dtype=float)
+        lons = np.asarray(lons, dtype=float)
+        n = len(lats)
+
+        lo, hi = (from_age, to_age) if from_age <= to_age else (to_age, from_age)
+        span_len = hi - lo
+        if span_len == 0 or n == 0:
+            return lats.copy(), lons.copy(), np.ones(n, dtype=bool)
+
+        n_steps = max(1, int(np.ceil(span_len / float(time_step))))
+        increment = span_len / n_steps
+
+        points = pygplates.MultiPointOnSphere(list(zip(lats, lons)))
+        time_span = self._topological_model.reconstruct_geometry(
+            points,
+            initial_time=from_age,
+            oldest_time=hi,
+            youngest_time=lo,
+            time_increment=increment,
+            deactivate_points=deactivate_points,   # None => keep everything
+        )
+        recon = time_span.get_geometry_points(to_age, return_inactive_points=True)
+
+        out_lat = np.full(n, np.nan)
+        out_lon = np.full(n, np.nan)
+        active = np.zeros(n, dtype=bool)
+        for i, p in enumerate(recon):
+            if p is not None:
+                out_lat[i], out_lon[i] = p.to_lat_lon()
+                active[i] = True
+        return out_lat, out_lon, active
+
     def rotate(
         self,
         cloud: PointCloud,
         from_age: float,
         to_age: float,
-        reassign_plate_ids: bool = False
+        reassign_plate_ids: bool = False,
+        *,
+        time_step: float = 1.0,
+        deactivate_points=None,
     ) -> PointCloud:
         """
-        Rotate points from one geological age to another.
+        Rotate points from one geological age to another (deforming-aware).
 
-        Uses batched rotation operations for performance (10-50x speedup
-        by grouping points by plate_id).
+        Points are advected with ``pygplates.TopologicalModel.reconstruct_geometry``,
+        resolving rigid plates and deforming networks. Motion does not depend on
+        ``plate_ids``; they are neither required nor consulted.
 
-        Points whose plate is not part of the plate circuit at ``to_age`` (e.g.
-        accreted terranes that have not formed yet at that age) are dropped, with
-        a warning. Their rotation circuit to the anchor is incomplete, so
-        pygplates returns an identity rotation; keeping them would silently leave
-        them at their ``from_age`` position while the rest of their continent
-        drifts away, so they are removed instead.
+        No silent drops: with the default ``deactivate_points=None`` every input
+        point is returned (``n_out == n_in``), with properties and ``plate_ids``
+        passed through unchanged and in input order. Points that fall outside any
+        resolved topology simply keep their position (they do not vanish).
 
         Parameters
         ----------
         cloud : PointCloud
-            Points to rotate. Must have plate_ids assigned.
+            Points to rotate. ``plate_ids`` are optional.
         from_age : float
             Source geological age (Ma).
         to_age : float
             Target geological age (Ma).
         reassign_plate_ids : bool, default=False
-            If True, reassign plate IDs at target age.
-            If False, keep original plate IDs.
+            If True, (re)assign topology-consistent plate IDs at ``to_age`` as an
+            output label. Never drops points.
+        time_step : float, default=1.0
+            Internal stepping granularity (Myr) for the topological reconstruction.
+        deactivate_points : optional
+            A ``pygplates`` deactivation policy. Default ``None`` keeps every
+            point. If supplied, inactive points are removed and the result cloud
+            is subset (properties + plate_ids in lockstep).
 
         Returns
         -------
         PointCloud
-            Rotated points with same properties. May have fewer points than the
-            input when some plates do not exist at ``to_age``.
-
-        Raises
-        ------
-        ValueError
-            If cloud does not have plate_ids assigned.
+            Rotated points with the same properties. Same length as the input
+            unless a deactivation policy removed points.
 
         Notes
         -----
-        Direction of rotation:
-        - from_age=0, to_age=50: Rotate present-day positions to 50 Ma
-        - from_age=50, to_age=0: Rotate 50 Ma positions to present day
+        Direction of rotation (works both ways):
+        - from_age=0, to_age=50: rotate present-day positions to 50 Ma
+        - from_age=50, to_age=0: rotate 50 Ma positions to present day
 
         Examples
         --------
         >>> # Rotate present-day continental points to 50 Ma
         >>> rotated = rotator.rotate(cloud, from_age=0.0, to_age=50.0)
         """
-        if cloud.plate_ids is None:
-            raise ValueError(
-                "Cloud must have plate_ids assigned. "
-                "Call assign_plate_ids() first."
-            )
+        from .geometry import LatLon2XYZ
 
-        # Drop points whose plate does not exist at the target age. Without this,
-        # pygplates returns an identity rotation for those plates and the points
-        # stay pinned at their from_age position (stranded), instead of vanishing
-        # as the terrane they belong to should before its appearance age.
-        if from_age != to_age:
-            bad = _unreconstructable_plate_ids(
-                cloud.plate_ids, self.rotation_model, to_age
-            )
-            if bad:
-                bad_mask = np.isin(cloud.plate_ids, list(bad))
-                n_bad = int(bad_mask.sum())
-                warnings.warn(
-                    f"{n_bad} points ({100*n_bad/cloud.n_points:.1f}%) belong to "
-                    f"plates {sorted(bad)} that are not part of the plate circuit "
-                    f"at {to_age} Ma (e.g. terranes not yet formed). "
-                    f"These points are dropped rather than left stranded at the "
-                    f"{from_age} Ma position.",
-                    UserWarning
-                )
-                cloud = cloud.subset(~bad_mask)
+        latlon = cloud.latlon
+        in_lat = latlon[:, 0]
+        in_lon = latlon[:, 1]
 
-        # Apply batched rotation (groups by plate_id for efficiency)
-        rotated_xyz = _move_points_batched(
-            cloud.xyz,
-            self.rotation_model,
-            cloud.plate_ids,
-            from_age,
-            to_age
+        out_lat, out_lon, active = self._advect_topological(
+            in_lat, in_lon, from_age, to_age,
+            time_step=time_step, deactivate_points=deactivate_points,
         )
 
-        # Create result cloud with rotated positions
+        if deactivate_points is None:
+            # Contract: keep every point. Any point pygplates could not place
+            # (should not happen with no deactivation policy) retains its
+            # original position rather than becoming NaN, so n_out == n_in.
+            inactive = ~active
+            if inactive.any():
+                out_lat[inactive] = in_lat[inactive]
+                out_lon[inactive] = in_lon[inactive]
+            keep = np.ones(cloud.n_points, dtype=bool)
+        else:
+            keep = active
+
+        new_xyz = LatLon2XYZ(np.column_stack([out_lat[keep], out_lon[keep]]))
         result = PointCloud(
-            xyz=rotated_xyz,
-            properties={k: v.copy() for k, v in cloud.properties.items()},
-            plate_ids=cloud.plate_ids.copy()
+            xyz=new_xyz,
+            properties={k: v[keep].copy() for k, v in cloud.properties.items()},
+            plate_ids=(cloud.plate_ids[keep].copy()
+                       if cloud.plate_ids is not None else None),
         )
 
-        # Optionally reassign plate IDs at new age
+        # Optionally (re)assign plate IDs at the new age — label only, no drops.
         if reassign_plate_ids:
-            result = self.assign_plate_ids(result, at_age=to_age)
+            result = self.assign_plate_ids(
+                result, at_age=to_age, remove_undefined=False
+            )
 
         return result
 
@@ -918,60 +1052,37 @@ class PointRotator:
         reassign_at_each_step: bool = True
     ) -> PointCloud:
         """
-        Rotate points incrementally through geological time.
+        Rotate points through geological time in ``time_step`` increments.
 
-        Useful when plate IDs may change during rotation (e.g.,
-        points crossing plate boundaries over long time spans).
+        Retained for back-compat. The topological engine already steps
+        internally at ``time_step`` granularity, so this delegates to
+        :meth:`rotate` with the same ``time_step``; there is no longer a separate
+        rigid per-step path. ``reassign_at_each_step`` no longer changes the
+        trajectory (motion is topological, not plate-id driven); it only controls
+        whether the *output* label is refreshed at ``to_age``.
 
         Parameters
         ----------
         cloud : PointCloud
-            Points to rotate. Must have plate_ids assigned.
+            Points to rotate. ``plate_ids`` are optional.
         from_age : float
             Source geological age (Ma).
         to_age : float
             Target geological age (Ma).
         time_step : float, default=1.0
-            Time step for incremental rotation (Myr).
+            Internal stepping granularity (Myr).
         reassign_at_each_step : bool, default=True
-            If True, reassign plate IDs after each time step.
-            This handles points that cross plate boundaries.
+            If True, assign topology-consistent plate IDs at ``to_age`` on output.
 
         Returns
         -------
         PointCloud
             Rotated points.
-
-        Examples
-        --------
-        >>> # Rotate with 1 Myr steps, reassigning plates
-        >>> rotated = rotator.rotate_incremental(
-        ...     cloud, from_age=0.0, to_age=100.0, time_step=1.0
-        ... )
         """
-        if cloud.plate_ids is None:
-            raise ValueError("Cloud must have plate_ids assigned.")
-
-        result = cloud.copy()
-        current_age = from_age
-        direction = 1 if to_age > from_age else -1
-
-        while (direction > 0 and current_age < to_age) or \
-              (direction < 0 and current_age > to_age):
-
-            # Calculate step size (don't overshoot)
-            remaining = abs(to_age - current_age)
-            actual_step = min(time_step, remaining) * direction
-            next_age = current_age + actual_step
-
-            # Rotate one step
-            result = self.rotate(
-                result,
-                from_age=current_age,
-                to_age=next_age,
-                reassign_plate_ids=reassign_at_each_step
-            )
-
-            current_age = next_age
-
-        return result
+        return self.rotate(
+            cloud,
+            from_age=from_age,
+            to_age=to_age,
+            reassign_plate_ids=reassign_at_each_step,
+            time_step=time_step,
+        )

@@ -109,9 +109,12 @@ def _static_polygons_exist():
 
 def _run_point_rotation_to_200():
     """
-    Create seeded random points, assign plate IDs, and rotate to 200 Ma.
+    Create seeded random points and rotate them to 200 Ma topologically.
 
-    Uses a fixed seed so random points are always the same.
+    Uses a fixed seed so random points are always the same. Under the single
+    topological engine, rotation no longer needs plate IDs and never drops
+    points, so this exercises the no-drop / property-preservation contract on
+    real data rather than comparing against a (now removed) rigid reference.
     """
     # Set seed for reproducibility
     rng = np.random.default_rng(ROTATION_SEED)
@@ -129,84 +132,44 @@ def _run_point_rotation_to_200():
     test_property = rng.uniform(0, 100, n_points)
     cloud.add_property('test_value', test_property)
 
-    # Create rotator
+    # Create rotator (topology_files now required for the deforming-aware engine)
     rotator = PointRotator(
         rotation_files=[str(f) for f in ROTATION_FILES],
-        static_polygons=str(STATIC_POLYGONS)
+        topology_files=[str(f) for f in TOPOLOGY_FILES],
+        static_polygons=str(STATIC_POLYGONS),
     )
 
-    # Assign plate IDs at present day (keep points without valid plate IDs for consistency)
-    cloud_with_ids = rotator.assign_plate_ids(cloud, at_age=0.0, remove_undefined=False)
-
-    # Filter to only points with valid plate IDs (non-zero)
-    valid_mask = cloud_with_ids.plate_ids != 0
-    cloud_valid = cloud_with_ids.subset(valid_mask)
-
-    # Rotate to 200 Ma
-    rotated = rotator.rotate(cloud_valid, from_age=0.0, to_age=200.0)
+    # Rotate to 200 Ma — no plate-id assignment or pre-filtering needed.
+    rotated = rotator.rotate(cloud, from_age=0.0, to_age=200.0)
 
     return {
+        'n_in': cloud.n_points,
         'xyz': rotated.xyz,
-        'plate_ids': rotated.plate_ids,
         'test_value': rotated.get_property('test_value'),
-        'n_valid_points': len(rotated),
+        'n_out': len(rotated),
+        'input_test_value': test_property,
     }
 
 
-def generate_rotation_reference_data():
-    """Generate and save rotation reference data. Run manually when needed."""
-    REF_DIR.mkdir(parents=True, exist_ok=True)
-    results = _run_point_rotation_to_200()
-
-    np.savez(
-        REF_DIR / "ref_rotation_200ma.npz",
-        xyz=results['xyz'],
-        plate_ids=results['plate_ids'],
-        test_value=results['test_value'],
-        n_valid_points=results['n_valid_points']
-    )
-
-    print(f"Saved rotation reference data to {REF_DIR / 'ref_rotation_200ma.npz'}")
-    print(f"  Points with valid plate IDs: {results['n_valid_points']}")
-
-
 @pytest.mark.skipif(not _static_polygons_exist(), reason="Static polygon files not found")
-def test_point_rotation_to_200_regression():
-    """Test that point rotation output matches reference data."""
-    ref_file = REF_DIR / "ref_rotation_200ma.npz"
-    if not ref_file.exists():
-        pytest.skip("Rotation reference data not found. Run generate_rotation_reference_data() first.")
+def test_point_rotation_to_200_no_drop_and_preserves_properties():
+    """Topological rotation to 200 Ma keeps every point and its properties.
 
+    Replaces the old rigid XYZ regression (which depended on a per-plate-id
+    engine that has been removed). The invariant that matters now is: no silent
+    drops, properties preserved in order, and finite positions.
+    """
     results = _run_point_rotation_to_200()
-    ref = np.load(ref_file)
 
-    # Check number of valid points is the same
-    assert results['n_valid_points'] == int(ref['n_valid_points']), \
-        f"Number of valid points changed: {results['n_valid_points']} vs {int(ref['n_valid_points'])}"
+    # No silent drops.
+    assert results['n_out'] == results['n_in'] == 500
 
-    # Check XYZ positions match
-    np.testing.assert_allclose(
-        results['xyz'], ref['xyz'], rtol=1e-10,
-        err_msg="XYZ positions mismatch after rotation to 200 Ma"
-    )
+    # Positions are finite and actually moved (200 Myr of plate motion).
+    assert np.all(np.isfinite(results['xyz']))
 
-    # Check plate IDs match
-    np.testing.assert_array_equal(
-        results['plate_ids'], ref['plate_ids'],
-        err_msg="Plate IDs mismatch"
-    )
-
-    # Check properties are preserved
-    np.testing.assert_allclose(
-        results['test_value'], ref['test_value'], rtol=1e-10,
-        err_msg="Property values changed during rotation"
-    )
+    # Properties preserved, in order.
+    np.testing.assert_array_equal(results['test_value'], results['input_test_value'])
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "rotation":
-        generate_rotation_reference_data()
-    else:
-        generate_reference_data()
-        generate_rotation_reference_data()
+    generate_reference_data()

@@ -460,29 +460,30 @@ class TestPointCloudCheckpoint:
 
 
 class TestPointRotatorBasic:
-    """Basic tests for PointRotator that don't require pygplates data."""
+    """Basic contract tests for the topological PointRotator.
 
-    def test_rotate_requires_plate_ids(self):
-        """Test that rotate() fails without plate_ids."""
-        # This test doesn't need actual rotation files
-        # We just test the validation logic
-        xyz = normalize_to_sphere(np.random.randn(50, 3))
-        cloud = PointCloud(xyz=xyz)
+    The rotator now advects points topologically; motion no longer depends on
+    plate_ids and the old "rotate requires plate_ids" ValueError is gone. Those
+    behaviours are covered in detail in test_topological_rotation.py against the
+    synthetic model fixture. Here we only pin the two facts that do not need the
+    full topological engine to state.
+    """
 
-        # The rotate method checks for plate_ids before doing anything else
-        # We can test this by creating a minimal mock that only has the rotate method
-        class MockRotator:
-            def rotate(self, cloud, from_age, to_age, reassign_plate_ids=False):
-                # Call the actual validation logic from PointRotator.rotate
-                if cloud.plate_ids is None:
-                    raise ValueError(
-                        "Cloud must have plate_ids assigned. "
-                        "Call assign_plate_ids() first."
-                    )
+    def test_rotate_no_longer_requires_plate_ids(self, synthetic_model):
+        """rotate() works on a cloud with no plate_ids (motion is topological)."""
+        cloud = PointCloud.from_latlon(np.array([[10.0, 10.0]]))
+        assert cloud.plate_ids is None
+        rotator = PointRotator(
+            rotation_files=synthetic_model["rotation_files"],
+            topology_files=synthetic_model["topology_files"],
+        )
+        out = rotator.rotate(cloud, from_age=0.0, to_age=50.0)  # must not raise
+        assert out.n_points == 1
 
-        mock = MockRotator()
-        with pytest.raises(ValueError, match="must have plate_ids assigned"):
-            mock.rotate(cloud, from_age=0, to_age=50)
+    def test_topology_files_required(self, synthetic_model):
+        """Constructing without topology_files raises a clear error."""
+        with pytest.raises(ValueError, match="topology_files is required"):
+            PointRotator(rotation_files=synthetic_model["rotation_files"])
 
 
 class TestPolygonFilterBasic:

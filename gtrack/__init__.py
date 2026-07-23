@@ -102,6 +102,7 @@ from .boundaries import (
     extract_ridge_geometries,
     extract_ridge_points_latlon,
 )
+from .sources import build_indicator_source
 
 __all__ = [
     # Main API
@@ -118,6 +119,8 @@ __all__ = [
     "PointCloud",
     "PointRotator",
     "PolygonFilter",
+    # Source construction
+    "build_indicator_source",
     # IO utilities
     "load_points_numpy",
     "load_points_latlon",

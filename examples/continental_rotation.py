@@ -51,6 +51,15 @@ rotation_files = [
     data_dir / "Global_EB_410-250Ma_GK07_Matthews++.rot"
 ]
 
+# Topology / plate-boundary files. These are now REQUIRED by PointRotator: point
+# motion is deforming-aware (topological), built from these files exactly as the
+# ocean SeafloorAgeTracker does.
+topology_files = [
+    data_dir / "Mesozoic-Cenozoic_plate_boundaries_Matthews++.gpml",
+    data_dir / "Paleozoic_plate_boundaries_Matthews++.gpml",
+    data_dir / "TopologyBuildingBlocks_Matthews++.gpml",
+]
+
 continental_polygons_file = data_dir / \
     "ContPolys/PresentDay_ContinentalPolygons_Matthews++.shp"
 
@@ -112,24 +121,25 @@ print(f"Filtered to {continental_cloud.n_points} continental points")
 print(f"Removed {cloud.n_points - continental_cloud.n_points} oceanic points")
 # -
 
-# ## Assign Plate IDs
+# ## (Optional) Assign Plate IDs — labelling only
 #
-# Points must have plate IDs before rotation. The PointRotator
-# uses static polygons to determine which plate each point
-# belongs to.
+# Motion is now topological and does NOT need plate IDs, so assigning them is
+# optional. When you do want them as an output label, the default source is the
+# resolved topology (consistent with how points actually move). We keep the call
+# here only to display the plates present; it is not required for rotation.
 
 # +
 rotator = PointRotator(
     rotation_files=rotation_files,
-    static_polygons=static_polygons_file
+    topology_files=topology_files,
+    static_polygons=static_polygons_file,
 )
 
-# Assign plate IDs at present day
-# remove_undefined=True removes points that don't fall on any plate
+# Assign topology-consistent plate IDs at present day (labelling only). We do
+# NOT drop undefined points here — that would silently shrink the cloud.
 continental_cloud = rotator.assign_plate_ids(
     continental_cloud,
     at_age=0.0,
-    remove_undefined=True
 )
 
 # Check unique plate IDs
