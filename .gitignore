@@ -3,3 +3,6 @@ site/
 
 # Generated notebooks (created by CI from examples/*.py)
 docs/demos/*.ipynb
+
+# Local debug scratch scripts (not part of the package)
+examples/debug_*.py
