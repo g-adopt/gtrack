@@ -141,6 +141,80 @@ class TestSeedPreservation:
         assert np.all(src.get_property("thickness")[n_seed:] == -1.0)
 
 
+class TestMembership:
+    """Membership is a separate channel so that lateral extent and thickness
+    stay separable downstream. Folding both into one array (thickness zeroed
+    outside) means an interpolator smooths their product, and no consumer can
+    recover either factor."""
+
+    def test_membership_is_one_on_seeds_zero_on_background(self, synthetic_model):
+        sm = synthetic_model
+        n_seed = 120
+        src = build_indicator_source(
+            _seed_cloud(sm, n=n_seed), _rotator(sm),
+            target_age=60.0, background_n=BG_N)
+        m = src.get_property("membership")
+        assert np.all(m[:n_seed] == 1.0)
+        assert np.all(m[n_seed:] == 0.0)
+
+    def test_membership_ignores_background_value(self, synthetic_model):
+        """background_value is about thickness-like channels; membership must
+        not inherit it, or a nonzero fill would silently mark the exterior as
+        partially in-region."""
+        sm = synthetic_model
+        n_seed = 100
+        src = build_indicator_source(
+            _seed_cloud(sm, n=n_seed), _rotator(sm),
+            target_age=30.0, background_n=BG_N, background_value=-1.0)
+        assert np.all(src.get_property("thickness")[n_seed:] == -1.0)
+        assert np.all(src.get_property("membership")[n_seed:] == 0.0)
+
+    def test_membership_can_be_disabled(self, synthetic_model):
+        sm = synthetic_model
+        src = build_indicator_source(
+            _seed_cloud(sm, n=80), _rotator(sm),
+            target_age=20.0, background_n=BG_N, membership_property=None)
+        assert "membership" not in src.properties
+
+    def test_membership_deblends_thickness(self, synthetic_model):
+        """The property the design exists for: a weighted blend of the source
+        gives thickness*membership, and dividing by the blended membership
+        recovers the seed thickness undiluted by the zero background.
+
+        Constant seed thickness makes the expected answer exact: wherever any
+        seed contributes, blend(thickness)/blend(membership) == that constant,
+        while blend(thickness) alone decays toward zero as the background takes
+        over."""
+        sm = synthetic_model
+        n_seed = 200
+        seeds = _seed_cloud(sm, n=n_seed)
+        seeds.add_property("thickness", np.full(n_seed, 180.0))
+        src = build_indicator_source(
+            seeds, _rotator(sm), target_age=40.0, background_n=BG_N)
+
+        thickness = src.get_property("thickness")
+        membership = src.get_property("membership")
+
+        # Gaussian-weighted kNN blend, as the downstream interpolator does it.
+        gl, go = create_sphere_mesh_latlon(4000)
+        probe = _unit(PointCloud.from_latlon(np.column_stack([gl, go])).xyz)
+        dist, idx = cKDTree(_unit(src.xyz)).query(probe, k=40)
+        w = np.exp(-dist**2 / (2 * 0.05**2))
+        w /= np.maximum(w.sum(axis=1, keepdims=True), 1e-30)
+        h_blend = np.sum(w * thickness[idx], axis=1)
+        m_blend = np.sum(w * membership[idx], axis=1)
+
+        covered = m_blend > 1e-3
+        assert covered.sum() > 100
+        np.testing.assert_allclose(
+            h_blend[covered] / m_blend[covered], 180.0, rtol=1e-9)
+
+        # The raw blend is NOT the thickness: partially-covered nodes read low.
+        partial = covered & (m_blend < 0.9)
+        assert partial.sum() > 0
+        assert np.all(h_blend[partial] < 180.0 * 0.9)
+
+
 class TestPlateIdVariants:
     def test_seeds_without_plate_ids_give_background_without_plate_ids(self, synthetic_model):
         sm = synthetic_model

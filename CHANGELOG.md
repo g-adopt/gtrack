@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added — `membership_property` on `build_indicator_source`
+
+`build_indicator_source` now records region membership as its own property,
+1.0 on the rotated seeds and 0.0 on the background, named by the new
+`membership_property` argument (default `"membership"`, pass `None` to omit).
+Its value on the background is pinned explicitly rather than inherited from
+`background_value`, which concerns thickness-like channels and means nothing
+for membership.
+
+This exists because a single zero-outside channel is ambiguous. Filling the
+background's thickness with 0 makes one number carry two unrelated statements —
+"outside the region" and "inside the region, zero thickness" — so a downstream
+interpolator smooths the product of coverage and thickness rather than the two
+separately, and neither can be recovered afterwards. Any consumer wanting the
+region's lateral extent gets it multiplied by the region's thickness, and vice
+versa. With membership carried alongside, blending it gives the local in-region
+weight fraction and dividing the blended thickness by that fraction recovers the
+seed-weighted thickness undiluted by the background.
+
 ## 0.4.0 — 2026-07-23
 
 ### Changed — continental/craton point rotation is now deforming-aware (topological)

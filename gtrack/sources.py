@@ -48,6 +48,7 @@ def build_indicator_source(
     background_value: float = 0.0,
     exclusion_factor: float = 1.0,
     time_step: float = 1.0,
+    membership_property: Optional[str] = "membership",
 ) -> PointCloud:
     """Rotate seeds and union them with a fresh uniform background grid.
 
@@ -83,6 +84,20 @@ def build_indicator_source(
         nearest rotated seed is dropped.
     time_step : float, default=1.0
         Internal stepping granularity for the topological reconstruction (Myr).
+    membership_property : str or None, default="membership"
+        Name of an extra property recording region membership: 1.0 on the
+        rotated seeds, 0.0 on the background. Pass ``None`` to omit it.
+
+        This exists because ``background_value`` alone is ambiguous. Filling
+        the background's *thickness* with 0 makes a single number carry two
+        unrelated statements — "outside the region" and "inside the region,
+        zero thickness" — and a downstream interpolator smooths the product
+        of the two, not the two separately. Any consumer that wants the
+        region's lateral extent then gets it multiplied by the region's
+        thickness, and vice versa. Publishing membership as its own channel
+        keeps the factors separable: blending it gives the local in-region
+        weight fraction, and dividing the blended thickness by that fraction
+        recovers the seed-weighted thickness undiluted by the background.
 
     Returns
     -------
@@ -90,7 +105,9 @@ def build_indicator_source(
         ``concatenate([rotated_seeds, background])`` — rotated seeds first (their
         properties/plate_ids preserved in order), then the surviving background
         points (each seed property filled with ``background_value``; plate_ids 0
-        if the seeds carry plate_ids, else absent).
+        if the seeds carry plate_ids, else absent). When ``membership_property``
+        is set, that property is 1.0 on the seeds and 0.0 on the background
+        regardless of ``background_value``.
 
     Notes
     -----
@@ -110,12 +127,26 @@ def build_indicator_source(
         seed_cloud, from_age=from_age, to_age=target_age, time_step=time_step
     )
 
+    # 1b. Mark the seeds as in-region. Added before the background is built so
+    #     the property-fill loop below sees it like any other seed property;
+    #     the background's value is then pinned to 0.0 explicitly rather than
+    #     inherited from background_value, which is about thickness-like
+    #     channels and carries no meaning for membership.
+    if membership_property is not None:
+        rotated.add_property(
+            membership_property, np.ones(rotated.n_points, dtype=float)
+        )
+
     # 2. Fresh uniform background grid AT the target age.
     lats, lons = create_sphere_mesh_latlon(background_n)
     background = PointCloud.from_latlon(np.column_stack([lats, lons]))
     for name in rotated.properties:
         background.add_property(
             name, np.full(background.n_points, background_value, dtype=float)
+        )
+    if membership_property is not None:
+        background.add_property(
+            membership_property, np.zeros(background.n_points, dtype=float)
         )
     background.plate_ids = (
         np.zeros(background.n_points, dtype=int)
