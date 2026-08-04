@@ -36,9 +36,13 @@ visualization = [
     "matplotlib>=3.5",
     "cartopy>=0.21",
 ]
+hdf5 = [
+    "h5py>=3.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=3.0",
+    "h5py>=3.0",
 ]
 docs = [
     "mkdocs>=1.5",

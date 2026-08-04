@@ -145,6 +145,86 @@ def load_points_latlon(
     return PointCloud.from_latlon(latlon, properties)
 
 
+def load_latlon_grid_hdf5(
+    filepath: Union[str, Path],
+    property_name: str
+) -> "PointCloud":
+    """
+    Load a lat/lon gridded field from an HDF5 (or NetCDF4) file.
+
+    The file must hold ``lon`` and ``lat`` datasets, plus the values under
+    either ``property_name`` or ``z``. Both grid layouts are accepted: 1-D
+    ``lon`` and ``lat`` are treated as axes and expanded onto a full mesh,
+    while 2-D ones are taken as already paired with the values and only
+    flattened.
+
+    Longitudes above 180 are wrapped to the negative half, since the rest of
+    gtrack works in -180 to 180 and many published grids are published in
+    0 to 360.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the HDF5/NetCDF4 file.
+    property_name : str
+        Name to attach the values under, and the first dataset name looked
+        for inside the file. ``z`` is accepted as a fallback, which is what
+        GMT-derived grids tend to use.
+
+    Returns
+    -------
+    PointCloud
+        One point per grid node, carrying ``property_name``.
+
+    Raises
+    ------
+    ImportError
+        If h5py is not installed. It is an optional dependency; install with
+        ``pip install gtrack[hdf5]``.
+    KeyError
+        If the file holds neither ``property_name`` nor ``z``.
+
+    Examples
+    --------
+    >>> cloud = load_latlon_grid_hdf5('lithospheric_thickness.h5', 'thickness')
+    """
+    try:
+        import h5py
+    except ImportError as exc:  # pragma: no cover - exercised by absence
+        raise ImportError(
+            "load_latlon_grid_hdf5 requires h5py, which is an optional "
+            "dependency of gtrack. Install it with 'pip install gtrack[hdf5]'."
+        ) from exc
+
+    from .point_rotation import PointCloud
+
+    with h5py.File(filepath, "r") as f:
+        lon = f["lon"][:]
+        lat = f["lat"][:]
+        if property_name in f:
+            values = f[property_name][:]
+        elif "z" in f:
+            values = f["z"][:]
+        else:
+            raise KeyError(
+                f"File must contain '{property_name}' or 'z'. "
+                f"Available datasets: {list(f.keys())}"
+            )
+
+    lon = np.where(lon > 180, lon - 360, lon)
+
+    if lon.ndim == 1 and lat.ndim == 1:
+        lon_grid, lat_grid = np.meshgrid(lon, lat)
+        latlon = np.column_stack([lat_grid.ravel(), lon_grid.ravel()])
+    else:
+        latlon = np.column_stack([lat.ravel(), lon.ravel()])
+    values = values.ravel()
+
+    cloud = PointCloud.from_latlon(latlon)
+    cloud.add_property(property_name, values)
+    return cloud
+
+
 def save_points_numpy(
     cloud: "PointCloud",
     filepath: Union[str, Path],
