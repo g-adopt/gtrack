@@ -313,3 +313,40 @@ def test_initial_ages_survive_a_shuffle(seed, monkeypatch):
 
     for before, after in zip(baseline, shuffled):
         np.testing.assert_array_equal(before, after)
+
+
+@requires_data
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_mor_seeds_survive_a_shuffle(seed, monkeypatch):
+    """The seeding loops are where the defect was originally found.
+
+    generate_mor_seeds appends seeds along each sub-segment in the order the
+    sub-segments arrive, and the tracker concatenates that verbatim, so a
+    permutation here is what made a cold tracker walk irreproducible. All three
+    loops read nothing but the resolved geometry, so ordering by geometry has
+    to make the emitted seeds identical however the sub-segments are presented
+    — not merely the same set, the same array.
+    """
+    import pygplates
+
+    import gtrack.mor_seeds as mor_seeds
+
+    topologies = [pygplates.FeatureCollection(str(f)) for f in TOPOLOGY_FILES]
+    rotation_model = _rotation_model()
+
+    def seeds():
+        return mor_seeds.generate_mor_seeds(TIE_AGE, topologies, rotation_model)
+
+    base_lats, base_lons = seeds()
+    assert len(base_lats) > 0, "no MOR seeds generated; the test would be vacuous"
+
+    real = mor_seeds.ordered_sub_segments
+    monkeypatch.setattr(
+        mor_seeds,
+        "ordered_sub_segments",
+        lambda section: real(ShuffledSection(section, seed)),
+    )
+    shuffled_lats, shuffled_lons = seeds()
+
+    np.testing.assert_array_equal(base_lats, shuffled_lats)
+    np.testing.assert_array_equal(base_lons, shuffled_lons)

@@ -40,6 +40,13 @@ def sub_segment_sort_key(shared_sub_segment) -> tuple:
       (-34.5453, -109.2551) in two points. Validating a key against one plate
       model is not enough; that key holds on Muller 2022 and fails here.
 
+    Worth recording about the Muller section, since it is the shape that makes
+    endpoint keys tempting and wrong: its first three sub-segments all
+    terminate at the same point, the triple junction at (-6.248899, 30.161842)
+    between plates 101, 505 and 701. Sub-segments meeting at a junction share
+    endpoints by construction, which is why no single endpoint distinguishes
+    them.
+
     Ties on the full geometry are still possible and are harmless wherever the
     caller reads nothing but the geometry, since two sub-segments can only tie
     by being the same shape. The sort is stable, so tied entries keep their
