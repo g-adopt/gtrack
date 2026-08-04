@@ -11,8 +11,9 @@ from pathlib import Path
 
 from gtrack import SeafloorAgeTracker, TracerConfig, PointCloud, PointRotator
 
-# Data paths
-DATA_DIR = Path(__file__).parent.parent / "data" / "Plate_model"
+# Data paths. The plate model is what `make data` fetches into examples/, which
+# is also where test_checkpoint_roundtrip and test_sub_myr_step look for it.
+DATA_DIR = Path(__file__).parent.parent / "examples" / "Matthews_et_al_410_0"
 REF_DIR = Path(__file__).parent / "data"
 
 ROTATION_FILES = [

@@ -51,6 +51,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Cache plate model data
+        uses: actions/cache@v4
+        with:
+          # The tarball, not the extracted tree. The Makefile's extract rule
+          # depends on the tarball, so a hit skips the download and still
+          # unpacks locally. Deliberately no restore-keys: if the URL in the
+          # Makefile changes, a fuzzy hit would restore the old tarball, make
+          # would see its target satisfied, and the run would quietly test
+          # against the wrong plate model. One re-download after a Makefile
+          # edit is the cheaper mistake.
+          path: examples/Matthews_et_al_410_0.tar.gz
+          key: ${{ runner.os }}-plate-model-${{ hashFiles('examples/Makefile') }}
+
+      - name: Download plate model data
+        working-directory: examples
+        run: make data
+
       - name: Run tests
         run: |
           python -m pytest tests/ -v --tb=short
