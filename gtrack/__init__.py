@@ -106,7 +106,11 @@ from .boundaries import (
     extract_ridge_geometries,
     extract_ridge_points_latlon,
 )
-from .sources import build_indicator_source
+from .sources import (
+    build_indicator_source,
+    PolygonIndicatorConfig,
+    PolygonIndicatorSource,
+)
 
 __all__ = [
     # Main API
@@ -125,6 +129,8 @@ __all__ = [
     "PolygonFilter",
     # Source construction
     "build_indicator_source",
+    "PolygonIndicatorConfig",
+    "PolygonIndicatorSource",
     # Age-indexed cloud protocol and checkpoint policy
     "AgeCloudSource",
     "CheckpointPolicy",
