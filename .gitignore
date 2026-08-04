@@ -1,6 +1,13 @@
 __pycache__/
 site/
 
+# Build artefacts
+dist/
+*.egg-info/
+
+# macOS
+.DS_Store
+
 # Generated notebooks (created by CI from examples/*.py)
 docs/demos/*.ipynb
 
