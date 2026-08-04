@@ -15,7 +15,10 @@ import pytest
 
 from gtrack import AgeCloudSource, CheckpointPolicy, PointCloud
 from gtrack.config import TracerConfig
+from gtrack.hpc_integration import SeafloorAgeTracker
 from gtrack.lithosphere import LithosphereCloudConfig, LithosphereCloudSource
+from gtrack.point_rotation import PointRotator
+from gtrack.polygon_filter import PolygonFilter
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +94,21 @@ class FakeFilter:
 
 
 @pytest.fixture
-def fakes(monkeypatch):
+def fakes(monkeypatch, bind_signature):
     FakeTracker.instances = []
-    monkeypatch.setattr("gtrack.lithosphere.SeafloorAgeTracker", FakeTracker)
-    monkeypatch.setattr("gtrack.lithosphere.PointRotator", FakeRotator)
-    monkeypatch.setattr("gtrack.lithosphere.PolygonFilter", FakeFilter)
+    # Each stand-in is bound to the signature of what it replaces, constructor
+    # and methods alike, so a call this suite accepts is one production would
+    # also accept. See conftest.signature_bound for why that is worth a wrapper.
+    monkeypatch.setattr(
+        "gtrack.lithosphere.SeafloorAgeTracker",
+        bind_signature(SeafloorAgeTracker, FakeTracker),
+    )
+    monkeypatch.setattr(
+        "gtrack.lithosphere.PointRotator", bind_signature(PointRotator, FakeRotator)
+    )
+    monkeypatch.setattr(
+        "gtrack.lithosphere.PolygonFilter", bind_signature(PolygonFilter, FakeFilter)
+    )
     return FakeTracker
 
 

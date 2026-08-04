@@ -11,7 +11,13 @@ import numpy as np
 import pytest
 
 from gtrack import AgeCloudSource, PointCloud
-from gtrack.sources import PolygonIndicatorConfig, PolygonIndicatorSource
+from gtrack.point_rotation import PointRotator
+from gtrack.polygon_filter import PolygonFilter
+from gtrack.sources import (
+    PolygonIndicatorConfig,
+    PolygonIndicatorSource,
+    build_indicator_source,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,14 +68,25 @@ def fake_build_indicator_source(seed_cloud, rotator, target_age, **kwargs):
 
 
 @pytest.fixture
-def fakes(monkeypatch):
+def fakes(monkeypatch, bind_signature):
+    signature_bound = bind_signature
     FakeFilter.instances = []
     FakeRotator.instances = []
     fake_build_indicator_source.calls = []
-    monkeypatch.setattr("gtrack.polygon_filter.PolygonFilter", FakeFilter)
-    monkeypatch.setattr("gtrack.sources.PointRotator", FakeRotator)
+    # Every stand-in is bound to the signature of the thing it replaces, so a
+    # call this suite accepts is one production would also accept. Without it
+    # the **kwargs below swallows any keyword, including one the real helper
+    # does not have. See conftest.signature_bound.
     monkeypatch.setattr(
-        "gtrack.sources.build_indicator_source", fake_build_indicator_source
+        "gtrack.polygon_filter.PolygonFilter",
+        signature_bound(PolygonFilter, FakeFilter),
+    )
+    monkeypatch.setattr(
+        "gtrack.sources.PointRotator", signature_bound(PointRotator, FakeRotator)
+    )
+    monkeypatch.setattr(
+        "gtrack.sources.build_indicator_source",
+        signature_bound(build_indicator_source, fake_build_indicator_source),
     )
     return fake_build_indicator_source
 
