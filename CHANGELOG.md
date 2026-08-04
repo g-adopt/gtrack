@@ -135,14 +135,27 @@ old tarball, satisfy make's target, and quietly test against the wrong plate
 model.
 
 Making the data reachable exposed `test_tracker_200_to_180_regression`, which
-had been skipped rather than passing since the engine rewrite and raises
-`TypeError` when actually run — `default_refinement_levels` is not a
-`TracerConfig` field. It is now `xfail(strict=False)` with the reason spelled
-out, because correcting the two dead arguments would only move the failure: the
-committed reference arrays predate both the Fibonacci mesh rewrite and the
-topological rotation rewrite, so they disagree in shape before any value is
-compared. Regenerating them was gated on the sub-segment ordering fix above,
-which is now in.
+had been skipped rather than passing since the engine rewrite and raised
+`TypeError` when actually run. It is repaired and green, which restores the only
+pinned-number test on the tracker and ridge-spawning path — everything else
+covers the rotation path.
+
+Both its call and its reference had to be rebuilt. `default_refinement_levels`
+became `default_mesh_points=10242`, the faithful translation of the level-5
+icosahedral mesh it asked for. Note that this is deliberately *not* the count
+that reproduces the old reference: scanning for one lands on 20480, which
+returns the previous 190 Ma cloud size exactly and is a coincidence — at that
+setting the median per-point position differs from the old reference by 2694 km.
+
+The reference now stores four invariants per age rather than full arrays: exact
+point count, mean age, max age, and the sum of absolute coordinates. Full arrays
+at `rtol=1e-10` cannot survive being generated on one platform and asserted on
+another, and a reference that goes red for the platform rather than for the code
+carries no information. The four were each verified bit-identical across three
+processes at different hash seeds, and verified non-vacuous: perturbing the mesh
+size is caught by the point count, and perturbing the spreading rate by the mean
+age. What they miss is a position-only change preserving count and mean age,
+which the craton oracle already pins at `rtol=1e-9`.
 
 ## 0.4.0 — 2026-07-23
 
