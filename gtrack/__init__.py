@@ -72,7 +72,10 @@ from .hpc_integration import SeafloorAgeTracker
 # Point rotation API
 from .point_rotation import PointCloud, PointRotator
 from .polygon_filter import PolygonFilter
+from .age_sources import AgeCloudSource
+from .checkpoints import CheckpointPolicy
 from .io_formats import (
+    load_latlon_grid_hdf5,
     load_points_numpy,
     load_points_latlon,
     load_points_gpml,
@@ -121,7 +124,11 @@ __all__ = [
     "PolygonFilter",
     # Source construction
     "build_indicator_source",
+    # Age-indexed cloud protocol and checkpoint policy
+    "AgeCloudSource",
+    "CheckpointPolicy",
     # IO utilities
+    "load_latlon_grid_hdf5",
     "load_points_numpy",
     "load_points_latlon",
     "load_points_gpml",

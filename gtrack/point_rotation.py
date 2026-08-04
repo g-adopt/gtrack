@@ -228,6 +228,82 @@ class PointCloud:
 
         return cls(xyz=xyz, properties=properties or {})
 
+    @classmethod
+    def from_data(
+        cls,
+        data,
+        property_name: str,
+        n_points_fallback: int = 20000
+    ) -> "PointCloud":
+        """
+        Create PointCloud from whichever of four shapes the caller has.
+
+        Callers configuring a source rarely hold a PointCloud already. They
+        hold a gridded data file, or a pair of arrays, or a single number
+        meaning "this value everywhere". This dispatches all of them, so the
+        choice of input shape stops being every caller's problem.
+
+        Parameters
+        ----------
+        data : PointCloud or str or Path or tuple or int or float
+            One of:
+
+            - a PointCloud, returned unchanged;
+            - a path to an HDF5/NetCDF lat/lon grid, loaded via
+              :func:`~gtrack.io_formats.load_latlon_grid_hdf5`;
+            - a ``(latlon, values)`` tuple, with latlon of shape (N, 2);
+            - a scalar, broadcast onto a Fibonacci sphere mesh of
+              ``n_points_fallback`` points.
+        property_name : str
+            Name the property is attached under. For a file this is also the
+            dataset looked for inside it.
+        n_points_fallback : int, default=20000
+            Mesh size used ONLY for the scalar case. Every other input brings
+            its own points and ignores this.
+
+        Returns
+        -------
+        PointCloud
+            Cloud carrying ``property_name``.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` is none of the four accepted shapes.
+
+        Examples
+        --------
+        >>> cloud = PointCloud.from_data(50.0, 'thickness', n_points_fallback=5000)
+        >>> cloud = PointCloud.from_data((latlon, values), 'thickness')
+        >>> cloud = PointCloud.from_data('thickness_grid.h5', 'thickness')
+        """
+        from pathlib import Path
+
+        from .io_formats import load_latlon_grid_hdf5
+        from .mesh import create_sphere_mesh_latlon
+
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, (str, Path)):
+            return load_latlon_grid_hdf5(data, property_name)
+        if isinstance(data, tuple) and len(data) == 2:
+            latlon, values = data
+            cloud = cls.from_latlon(np.asarray(latlon))
+            cloud.add_property(property_name, np.asarray(values))
+            return cloud
+        # bool is a subclass of int; a boolean here is a caller error, not a
+        # thickness of 1 metre everywhere.
+        if isinstance(data, (int, float)) and not isinstance(data, bool):
+            lats, lons = create_sphere_mesh_latlon(n_points_fallback)
+            latlon = np.column_stack([lats, lons])
+            cloud = cls.from_latlon(latlon)
+            cloud.add_property(property_name, np.full(len(latlon), float(data)))
+            return cloud
+        raise TypeError(
+            f"Unsupported data type: {type(data)}. "
+            "Expected PointCloud, file path, (latlon, values) tuple, or scalar."
+        )
+
     def add_property(self, name: str, values: np.ndarray) -> None:
         """
         Add or update a property.
