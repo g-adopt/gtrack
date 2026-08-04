@@ -74,6 +74,7 @@ from .point_rotation import PointCloud, PointRotator
 from .polygon_filter import PolygonFilter
 from .age_sources import AgeCloudSource
 from .checkpoints import CheckpointPolicy
+from .lithosphere import LithosphereCloudConfig, LithosphereCloudSource
 from .io_formats import (
     load_latlon_grid_hdf5,
     load_points_numpy,
@@ -127,6 +128,8 @@ __all__ = [
     # Age-indexed cloud protocol and checkpoint policy
     "AgeCloudSource",
     "CheckpointPolicy",
+    "LithosphereCloudConfig",
+    "LithosphereCloudSource",
     # IO utilities
     "load_latlon_grid_hdf5",
     "load_points_numpy",
