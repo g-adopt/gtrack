@@ -329,6 +329,68 @@ class TestTimeStepValidation:
 
 
 # ---------------------------------------------------------------------------
+# Zero-span tolerance
+# ---------------------------------------------------------------------------
+class TestZeroSpanTolerance:
+    """A nominally zero age span must be a no-op even when it arrives carrying
+    float round-off.
+
+    Callers convert a non-dimensional model time to Ma, so "no time has passed"
+    reaches the rotator as ~1e-14 Myr rather than 0.0. An exact ``span == 0``
+    guard let that through to ``reconstruct_geometry``, which rejects an oldest
+    time equal to its youngest and raised.
+    """
+
+    # Round-off actually observed from a non-dimensional time conversion.
+    NOISE = 1.4210854715202004e-14
+
+    # pygplates rejects a span of this size or smaller. The guard has to clear
+    # it with margin, not match it: a tolerance of exactly 1e-9 leaves this
+    # value falling through to the reconstruction, which then raises.
+    PYGPLATES_REJECTS = 1e-9
+
+    @pytest.mark.parametrize(
+        "to_age", [0.0, NOISE, -NOISE, PYGPLATES_REJECTS, 100.0 - NOISE]
+    )
+    def test_noise_span_is_a_no_op(self, synthetic_model, to_age):
+        sm = synthetic_model
+        r = _rotator(sm)
+        from_age = 0.0 if to_age < 1.0 else 100.0
+        pts = [sm["plate_a_point"], sm["network_point"], sm["gap_point"]]
+        n = len(pts)
+        cloud = _cloud(
+            pts,
+            props={"depth": np.arange(n, dtype=float)},
+            plate_ids=np.arange(11, 11 + n),
+        )
+
+        out = r.rotate(cloud, from_age=from_age, to_age=to_age)
+
+        assert out.n_points == n
+        # Positions round-trip through lat/lon, so they return equal to within
+        # the trig conversion rather than bit-for-bit; atol matches the
+        # round-trip tests above.
+        np.testing.assert_allclose(out.xyz, cloud.xyz, atol=1e-9)
+        # The early return still has to keep properties and ids in lockstep.
+        np.testing.assert_array_equal(out.get_property("depth"), cloud.get_property("depth"))
+        np.testing.assert_array_equal(out.plate_ids, cloud.plate_ids)
+
+    def test_span_above_tolerance_still_advects(self, synthetic_model):
+        """The tolerance must not swallow a span a caller could mean. Sub-Myr
+        spans are legitimate — ``rotate`` validates ``time_step`` only as
+        positive — so one comfortably above the tolerance has to keep moving
+        points."""
+        sm = synthetic_model
+        r = _rotator(sm)
+        cloud = _cloud([sm["plate_a_point"]])
+
+        out = r.rotate(cloud, from_age=0.0, to_age=0.5, time_step=0.5)
+
+        assert out.n_points == 1
+        assert not np.allclose(out.xyz, cloud.xyz)
+
+
+# ---------------------------------------------------------------------------
 # Deep-time edge case
 # ---------------------------------------------------------------------------
 class TestDeepTime:

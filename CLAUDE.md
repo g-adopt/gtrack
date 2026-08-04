@@ -212,6 +212,8 @@ enable_verbose()  # Show progress messages
 
 9. **Indicator sources need a FRESH background, not a back-rotated grid**: use `build_indicator_source` (`gtrack/sources.py`) to build a "seeds + zero background" field. It rotates only the in-region seeds topologically and lays down a fresh uniform background grid *at the target age*. Do NOT back-rotate a fixed present-day grid: it deforms with age (gaps grow at ridges/trenches), leaving the downstream nearest-neighbour interpolation (large distance threshold) with no nearby background point. The fresh background is a correctness requirement, not a rigid-engine workaround. No `plate_ids`, reattachment, or sliver inheritance are needed.
 
+10. **Age spans arrive carrying float round-off**: callers that convert a non-dimensional model time to Ma hand `PointRotator.rotate` a nominal zero span as ~1e-14 Myr, not 0.0. `reconstruct_geometry` rejects a span of 1e-9 Myr or less as degenerate, so `_advect_topological` guards with `ZERO_SPAN_TOLERANCE_MYR` (1e-6 Myr) rather than an exact `== 0`. The threshold has to clear pygplates' own with margin: a guard of exactly 1e-9 leaves the boundary case falling through and still raising.
+
 ## Documentation Website
 
 The documentation is built with MkDocs and deployed to https://gtrack.gadopt.org

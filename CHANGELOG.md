@@ -21,6 +21,21 @@ versa. With membership carried alongside, blending it gives the local in-region
 weight fraction and dividing the blended thickness by that fraction recovers the
 seed-weighted thickness undiluted by the background.
 
+### Fixed — a nominally zero age span no longer raises
+
+`PointRotator._advect_topological` guarded against a zero-length span with an
+exact `span == 0` test. Callers that derive ages by converting a
+non-dimensional model time to Ma hand it float round-off instead — a measured
+~1.4e-14 Myr — which fell through the guard into `reconstruct_geometry`, which
+rejects a span it considers degenerate (measured: 1e-9 Myr or less) with
+"Oldest time cannot be later than (or same as) youngest time."
+
+The guard is now a tolerance, `ZERO_SPAN_TOLERANCE_MYR = 1e-6`. The value clears
+pygplates' own threshold with margin rather than matching it, since a tolerance
+of exactly 1e-9 leaves spans landing on the boundary still raising. 1e-6 Myr is
+one year of plate motion, of order 10 cm, and still five orders of magnitude
+below the shortest step gtrack supports.
+
 ## 0.4.0 — 2026-07-23
 
 ### Changed — continental/craton point rotation is now deforming-aware (topological)

@@ -38,6 +38,20 @@ import numpy as np
 import pygplates
 
 
+# Age spans shorter than this (Myr) are treated as no motion at all.
+#
+# We need to set this because external callers routinely derive ages by
+# converting a non-dimensional model time to Ma, and that conversion can carry
+# float round-off: a nominal zero span arrives as ~1e-14 Myr rather than
+# exactly 0.0. ``reconstruct_geometry`` rejects any span it considers
+# degenerate — measured, an oldest-minus-youngest of 1e-9 Myr or less — raising
+# "Oldest time cannot be later than (or same as) youngest time."
+# An exact ``span == 0`` guard therefore lets the round-off straight
+# through into that rejecting band.
+#
+ZERO_SPAN_TOLERANCE_MYR = 1e-6
+
+
 @dataclass
 class PointCloud:
     """
@@ -907,6 +921,11 @@ class PointRotator:
         ``reconstruct_geometry`` requires ``(oldest_time - youngest_time)`` to be
         an integer multiple of ``time_increment``; we derive an integer
         ``n_steps`` and an exact increment ``span / n_steps`` to satisfy it.
+
+        It also rejects a span it considers degenerate — measured, 1e-9 Myr or
+        less — so spans below ``ZERO_SPAN_TOLERANCE_MYR`` return the input
+        unmoved rather than reaching it. See that constant for why the
+        threshold sits well clear of pygplates' own rather than on it.
         """
         if not (time_step > 0):
             raise ValueError(
@@ -921,7 +940,11 @@ class PointRotator:
 
         lo, hi = (from_age, to_age) if from_age <= to_age else (to_age, from_age)
         span_len = hi - lo
-        if span_len == 0 or n == 0:
+        # Tolerance, not equality: ages that round-trip through a
+        # non-dimensional time conversion arrive carrying float noise, and
+        # pygplates rejects a span that is zero within its own tolerance.
+        # See ZERO_SPAN_TOLERANCE_MYR.
+        if span_len < ZERO_SPAN_TOLERANCE_MYR or n == 0:
             return lats.copy(), lons.copy(), np.ones(n, dtype=bool)
 
         n_steps = max(1, int(np.ceil(span_len / float(time_step))))
@@ -998,6 +1021,14 @@ class PointRotator:
         Direction of rotation (works both ways):
         - from_age=0, to_age=50: rotate present-day positions to 50 Ma
         - from_age=50, to_age=0: rotate 50 Ma positions to present day
+
+        A span shorter than ``ZERO_SPAN_TOLERANCE_MYR`` (1e-6 Myr) returns the
+        input unmoved, with properties and plate ids intact. Callers that
+        derive ages from a non-dimensional model time reach this routinely: a
+        nominal zero span arrives as float round-off, and pygplates rejects a
+        span it considers degenerate. ``time_step`` is validated only as
+        positive, so a genuinely sub-microyear span is legal to ask for and
+        will silently no-op.
 
         Examples
         --------
