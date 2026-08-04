@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-08-04
 
 ### Changed — mid-ocean ridge seeding is now reproducible between processes, and this moves numbers
 
