@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### Changed — mid-ocean ridge seeding is now reproducible between processes, and this moves numbers
+
+pygplates returns `shared_boundary_section.get_shared_sub_segments()` in an
+order that varies from one process to the next. Every routine that iterated it
+therefore emitted the same result permuted between runs, and downstream that
+permutation is not inert: it is what made a cold tracker walk irreproducible,
+and it was the origin of the ~1.5e-4 spread seen in the g-adopt lithosphere
+demo. Measured on Müller 2022 at 230 Ma, eight separate processes produced
+three distinct seed orders.
+
+All six call sites now visit sub-segments through the new
+`gtrack.topology_order.ordered_sub_segments`, which sorts them by their full
+resolved geometry. Narrower keys were tried and each fails: the feature id
+belongs to the section so every sub-segment reports the same value, the sharing
+plate ids are not a total order, and first-point/last-point/length is not
+either — Matthews 2016 at 0 Ma has a section with two coincident two-point
+sub-segments agreeing on all five.
+
+**This is a reproducibility fix, not a physics correction, and it changes
+results.** Cloud size moves by roughly 0.5% (n=16770 against a previous modal
+16856). The order pygplates happened to return was itself an arbitrary member
+of the permutation family; this picks a canonical member of the same family, so
+any number that moves does so because it was never well defined. Anyone holding
+a reference generated before this change should regenerate it, and cannot
+attribute the difference against the old value.
+
+### Added — age-source scaffolding for driving gtrack across geological time
+
+Four additions that let a consumer walk gtrack through time without importing a
+gtrack class or reimplementing gtrack's conventions:
+
+- `AgeCloudSource`, a runtime-checkable Protocol saying only what a consumer
+  needs — which properties the clouds carry (`provides`, excluding `xyz`), how
+  to ask for one at an age (`at_age`), how to reject an age (`validate_age`),
+  and whether the source may only be walked backwards
+  (`monotonic_backward`). Because it is a Protocol, a numpy test double
+  satisfies it, so a consumer becomes testable without reconstruction data.
+- `PointCloud.from_data`, absorbing the cloud dispatch each caller was writing
+  for itself: an existing cloud, a gridded file, a `(latlon, values)` pair, or a
+  scalar broadcast onto a Fibonacci mesh. It rejects `bool`, which the code it
+  was lifted from accepted — `bool` subclasses `int`, so `True` silently became
+  a thickness of one everywhere.
+- `load_latlon_grid_hdf5`, including the two easy-to-miss details: longitudes
+  above 180 wrap to the negative half, and 1-D lat/lon are axes to be meshed
+  while 2-D ones are already paired with the values. Needs the new `hdf5`
+  extra; the core install stays numpy, scipy and pygplates.
+- `CheckpointPolicy`, owning the checkpoint naming and resume convention.
+  `best_at_or_before` means at or before in *time*, so it returns the smallest
+  age still at least the target — the youngest checkpoint no younger than where
+  the caller wants to be.
+
+### Added — `LithosphereCloudSource` and `PolygonIndicatorSource`
+
+The two source recipes, moved into gtrack beside the primitives they drive.
+`LithosphereCloudSource` provides `{"thickness", "age"}` and walks forward only;
+`PolygonIndicatorSource` provides `{"masked_thickness", "membership"}` and holds
+no walk state, so its ages may be asked for in any order.
+
+Two things are now inexpressible rather than merely fixed. `LithosphereCloudConfig`
+nests a `TracerConfig` as a typed field instead of merging a loose kwargs dict,
+so there is no second path to a tracker knob and no way for one to be silently
+shadowed. And `PolygonIndicatorConfig` has no `n_points`: `background_n` and
+`seed_fallback_n` are independent fields, because the single parameter they
+replace was doing two unrelated jobs — sizing the background grid rebuilt at
+every age, and standing in as a mesh size when the thickness input is a bare
+number. Only the first is ever active on real data, and it also sets the
+collision-removal radius, so a user adjusting what they believed was a seed
+count was moving the region's edge by up to a few hundred kilometres.
+
+The polygon channel is `masked_thickness`, not `thickness`. On a bounded source
+the channel carries the region's depth multiplied by its membership once a
+downstream blend has run, which is a different quantity from an unbounded
+thickness field, and naming them apart is what lets a consumer's
+required-versus-provided check reject a pairing that would read it as plain
+depth.
+
 ### Added — `membership_property` on `build_indicator_source`
 
 `build_indicator_source` now records region membership as its own property,
@@ -47,6 +123,26 @@ is effectively dilated by roughly that radius — 320 km at `background_n=5000`,
 113 km at 40000. The dilation is a hole in the point cloud rather than a
 property of the interpolation, so sharpening a downstream kernel does not reduce
 it.
+
+### Testing — CI now fetches the plate model, and the dead regression is honest
+
+CI previously ran `pytest tests/` with no data-fetch step, so every test needing
+reconstruction data was skipped there — including the craton oracle, which
+therefore ran on one machine only. The workflow now downloads the Matthews model
+and caches the tarball rather than the extracted tree, deliberately without
+`restore-keys`: a fuzzy cache hit after a Makefile URL change would restore the
+old tarball, satisfy make's target, and quietly test against the wrong plate
+model.
+
+Making the data reachable exposed `test_tracker_200_to_180_regression`, which
+had been skipped rather than passing since the engine rewrite and raises
+`TypeError` when actually run — `default_refinement_levels` is not a
+`TracerConfig` field. It is now `xfail(strict=False)` with the reason spelled
+out, because correcting the two dead arguments would only move the failure: the
+committed reference arrays predate both the Fibonacci mesh rewrite and the
+topological rotation rewrite, so they disagree in shape before any value is
+compared. Regenerating them was gated on the sub-segment ordering fix above,
+which is now in.
 
 ## 0.4.0 — 2026-07-23
 
