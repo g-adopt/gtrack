@@ -11,6 +11,76 @@ from typing import List, Optional, Tuple
 import pygplates
 
 
+def _sub_segment_sort_key(shared_sub_segment) -> tuple:
+    """Return a deterministic sort key for a shared sub-segment.
+
+    The key is the resolved geometry itself, as the full sequence of
+    ``(lat, lon)`` pairs. The geometry *values* are deterministic even though
+    the order pygplates hands the sub-segments back in is not, so they are the
+    only thing available to sort on.
+
+    Three narrower keys were considered and each fails:
+
+    - The **feature id** is the *section's* id, carried by every sub-segment
+      of that section alike, so sorting on it is a no-op that looks like a fix.
+    - The **sharing plate ids** are not a total order. In the section that
+      first exposed this (a MidOceanRidge in Muller 2022 at 230 Ma, five
+      sub-segments) they are [101], [701], [505], [101, 505, 701] and [101] —
+      101 appears twice.
+    - **First point, last point and length** is not a total order either, which
+      is measurable rather than hypothetical: Matthews 2016 at 0 Ma has a MOR
+      section whose three sub-segments include two that agree on all five
+      values — both run from (-34.54495002, -109.25705001) to
+      (-34.5453, -109.2551) in two points.
+
+    Ties on the full geometry are harmless, and that is what makes this key
+    sufficient rather than merely longer. Two sub-segments can only tie by
+    being geometrically identical, and every loop in this module reads nothing
+    from a sub-segment except its resolved geometry, so identical geometries
+    contribute identical output whichever way round they are visited. The sort
+    is stable, so their relative order follows the input, and that residual
+    freedom cannot reach the result.
+
+    Worth recording about the Muller section, since it is the shape that makes
+    this awkward: its first three sub-segments all terminate at the same point,
+    the triple junction at (-6.248899, 30.161842) between plates 101, 505 and
+    701. Sub-segments meeting at a junction share endpoints, which is why no
+    single endpoint distinguishes them.
+
+    Args:
+        shared_sub_segment: a pygplates shared sub-segment.
+
+    Returns:
+        A tuple of ``(lat, lon)`` pairs, one per point of the resolved
+        geometry, in geometry order.
+    """
+    return tuple(
+        point.to_lat_lon()
+        for point in shared_sub_segment.get_resolved_geometry().get_points()
+    )
+
+
+def ordered_sub_segments(shared_boundary_section) -> list:
+    """Return a boundary section's shared sub-segments in a stable order.
+
+    pygplates returns ``get_shared_sub_segments()`` in an order that varies
+    between processes, so any routine that iterates it emits the same result
+    permuted from one run to the next. Sorting here makes every caller
+    reproducible without changing what any of them compute: the set of
+    sub-segments is unchanged, only the order they arrive in.
+
+    Args:
+        shared_boundary_section: a resolved topological section.
+
+    Returns:
+        The section's shared sub-segments, sorted by
+        :func:`_sub_segment_sort_key`.
+    """
+    return sorted(
+        shared_boundary_section.get_shared_sub_segments(), key=_sub_segment_sort_key
+    )
+
+
 def get_stage_rotation_for_reconstructed_geometry(
     spreading_feature,
     rotation_model: pygplates.RotationModel,
@@ -193,7 +263,7 @@ def generate_mor_seeds(
         rotate_opposite_way = rotate_one_way.get_inverse()
 
         # Process each sub-segment of the ridge
-        for shared_sub_segment in shared_boundary_section.get_shared_sub_segments():
+        for shared_sub_segment in ordered_sub_segments(shared_boundary_section):
             # Tessellate the ridge segment
             mor_points = pygplates.MultiPointOnSphere(
                 shared_sub_segment.get_resolved_geometry().to_tessellated(
@@ -315,7 +385,7 @@ def generate_mor_seeds_with_plate_ids(
         rotate_opposite_way = rotate_one_way.get_inverse()
 
         # Process each sub-segment
-        for shared_sub_segment in shared_boundary_section.get_shared_sub_segments():
+        for shared_sub_segment in ordered_sub_segments(shared_boundary_section):
             mor_points = pygplates.MultiPointOnSphere(
                 shared_sub_segment.get_resolved_geometry().to_tessellated(
                     np.radians(ridge_sampling_degrees)
@@ -384,7 +454,7 @@ def get_ridge_geometries(
             shared_boundary_section.get_feature().get_feature_type()
             == pygplates.FeatureType.create_gpml("MidOceanRidge")
         ):
-            for shared_sub_segment in shared_boundary_section.get_shared_sub_segments():
+            for shared_sub_segment in ordered_sub_segments(shared_boundary_section):
                 ridge_geometries.append(shared_sub_segment.get_resolved_geometry())
 
     return ridge_geometries
