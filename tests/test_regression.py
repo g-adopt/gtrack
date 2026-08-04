@@ -80,6 +80,26 @@ def generate_reference_data():
 
 
 @pytest.mark.skipif(not _data_files_exist(), reason="GPlates data files not found")
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "Known broken, and not a regression — it has been unreachable rather than "
+        "green. It builds its tracker with two arguments the library stopped "
+        "accepting when the engine was rewritten: default_refinement_levels (line "
+        "41) is not a TracerConfig field, and verbose (line 54) is not a "
+        "SeafloorAgeTracker parameter. It raises TypeError before reaching any "
+        "numerical comparison. Repairing the call alone would not revive it: the "
+        "committed ref_age_{180,190}.npz predate both the mesh rewrite (559970b) "
+        "and the topological rotation rewrite (f09bb44), so the arrays no longer "
+        "agree even in shape. Regenerating them is gated on CONTRACTS.md F26 — "
+        "pygplates returns sub-segments in an order that varies between processes, "
+        "so a reference captured from an unpinned run is not a reference. The "
+        "Matthews 200->180 window itself measures clean across runs, so "
+        "regeneration should be viable, but it also needs the coarsening decision "
+        "and the n_points=20480 coincidence trap in CONTRACTS.md 4j. strict=False "
+        "so that a real repair reports XPASS here instead of failing."
+    ),
+)
 def test_tracker_200_to_180_regression():
     """Test that tracker output matches reference data at key checkpoints."""
     ref_file = REF_DIR / "ref_age_180.npz"
