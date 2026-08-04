@@ -36,6 +36,18 @@ of exactly 1e-9 leaves spans landing on the boundary still raising. 1e-6 Myr is
 one year of plate motion, of order 10 cm, and still five orders of magnitude
 below the shortest step gtrack supports.
 
+### Documented — `background_n` also sets the collision-removal radius
+
+The `background_n` docstring now records that it is not only a cost knob: it
+fixes the collision-removal radius, `exclusion_factor * sqrt(4*pi /
+background_n)`, so a coarser background deletes background points further out
+from every seed and leaves an annulus holding seeds but no background. A
+consumer sampling there sees only seeds and reads full membership, so the region
+is effectively dilated by roughly that radius — 320 km at `background_n=5000`,
+113 km at 40000. The dilation is a hole in the point cloud rather than a
+property of the interpolation, so sharpening a downstream kernel does not reduce
+it.
+
 ## 0.4.0 — 2026-07-23
 
 ### Changed — continental/craton point rotation is now deforming-aware (topological)

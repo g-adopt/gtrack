@@ -214,6 +214,8 @@ enable_verbose()  # Show progress messages
 
 10. **Age spans arrive carrying float round-off**: callers that convert a non-dimensional model time to Ma hand `PointRotator.rotate` a nominal zero span as ~1e-14 Myr, not 0.0. `reconstruct_geometry` rejects a span of 1e-9 Myr or less as degenerate, so `_advect_topological` guards with `ZERO_SPAN_TOLERANCE_MYR` (1e-6 Myr) rather than an exact `== 0`. The threshold has to clear pygplates' own with margin: a guard of exactly 1e-9 leaves the boundary case falling through and still raising.
 
+11. **`background_n` is not only a cost knob**: it sets the collision-removal radius `exclusion_factor * sqrt(4*pi / background_n)` inside `build_indicator_source`, so a coarse background deletes background points far out from every seed and dilates the region — ~320 km at 5000, ~113 km at 40000. That dilation is a hole in the point cloud, so no downstream kernel choice reduces it. Match it to the seed spacing unless you are coarsening on purpose.
+
 ## Documentation Website
 
 The documentation is built with MkDocs and deployed to https://gtrack.gadopt.org

@@ -76,6 +76,26 @@ def build_indicator_source(
         Source geological age of ``seed_cloud`` (Ma).
     background_n : int, default=40000
         Number of points in the fresh uniform background grid.
+
+        This is not only a cost knob: it sets the collision-removal radius in
+        step 3, ``exclusion_factor * sqrt(4*pi / background_n)`` radians, so a
+        coarser background deletes background points further out from every
+        seed. Beyond the seed region there is then an annulus of that width
+        holding no background points at all, which pulls a downstream
+        interpolator's membership estimate up towards 1 there. How far up
+        depends on the query — a kNN blend has no radius cap, so with enough
+        neighbours it reaches past the annulus and does pick up background
+        beyond it, and the effect is strongest when most of the neighbours fall
+        inside. The region is effectively dilated by roughly that radius:
+
+            background_n =  5000  ->  0.050 rad  ~ 320 km on Earth
+            background_n = 20000  ->  0.025 rad  ~ 160 km
+            background_n = 40000  ->  0.018 rad  ~ 113 km
+
+        The dilation is geometric — a hole in the point cloud — so it does not
+        shrink when the interpolation kernel is sharpened. Match ``background_n``
+        to the seed spacing unless you are deliberately coarsening, and keep the
+        resulting radius below the resolution of whatever consumes the cloud.
     background_value : float, default=0.0
         Value assigned to every seed property on the background points.
     exclusion_factor : float, default=1.0
