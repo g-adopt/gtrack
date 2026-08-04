@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .geometry import load_features as _load_features
 from .spatial import find_polygons
+from .topology_order import ordered_sub_segments
 
 
 class ResolvedTopologyCache:
@@ -281,7 +282,7 @@ def extract_ridge_geometries(
             shared_boundary_section.get_feature().get_feature_type()
             == pygplates.FeatureType.create_gpml("MidOceanRidge")
         ):
-            for shared_sub_segment in shared_boundary_section.get_shared_sub_segments():
+            for shared_sub_segment in ordered_sub_segments(shared_boundary_section):
                 ridge_geometries.append(shared_sub_segment.get_resolved_geometry())
 
     return ridge_geometries
@@ -368,7 +369,7 @@ def extract_subduction_geometries(
     for shared_boundary_section in shared_boundary_sections:
         feature_type = shared_boundary_section.get_feature().get_feature_type()
         if feature_type == pygplates.FeatureType.create_gpml("SubductionZone"):
-            for shared_sub_segment in shared_boundary_section.get_shared_sub_segments():
+            for shared_sub_segment in ordered_sub_segments(shared_boundary_section):
                 subduction_geometries.append(shared_sub_segment.get_resolved_geometry())
 
     return subduction_geometries

@@ -3,12 +3,27 @@ Initial age calculation for icosahedral mesh points.
 
 This module provides functions to compute initial seafloor ages
 from distance to the nearest ridge, matching GPlately's approach.
+
+Sub-segments are visited through ``ordered_sub_segments`` so the ridge list
+built for each plate does not depend on the order pygplates happens to return
+them in. Unlike the other callers of that helper, this one reads more than the
+geometry — it reads ``get_sharing_resolved_topologies()`` — so the argument
+that a tied sort key is harmless has to be made separately here, and it has two
+parts. The sharing topologies decide *whether* a sub-segment is appended, never
+*what* is appended, and what is appended is the resolved geometry; so two
+sub-segments tied on geometry contribute the same value, and if they bound
+different plates they contribute to different lists entirely. Measured at
+Matthews 2016, 0 Ma, where exactly this occurs: two coincident sub-segments,
+one bounding plate 911 and the other 923. The list is then consumed as a
+minimum over distances, which does not depend on the order it is taken in.
 """
 
 import numpy as np
 from typing import Callable, List, Optional, Tuple
 
 import pygplates
+
+from .topology_order import ordered_sub_segments
 
 
 def compute_initial_ages(
@@ -95,7 +110,7 @@ def compute_initial_ages(
                 shared_boundary_section.get_feature().get_feature_type()
                 == pygplates.FeatureType.create_gpml("MidOceanRidge")
             ):
-                for shared_subsegment in shared_boundary_section.get_shared_sub_segments():
+                for shared_subsegment in ordered_sub_segments(shared_boundary_section):
                     sharing_resolved_topologies = (
                         shared_subsegment.get_sharing_resolved_topologies()
                     )
