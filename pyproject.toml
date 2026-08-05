@@ -63,9 +63,9 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sghelichkhani/gtrack"
+Homepage = "https://github.com/g-adopt/gtrack"
 Documentation = "https://gtrack.gadopt.org"
-Repository = "https://github.com/sghelichkhani/gtrack"
+Repository = "https://github.com/g-adopt/gtrack"
 
 [tool.setuptools.packages.find]
 where = ["."]

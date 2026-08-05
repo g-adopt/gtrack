@@ -1,8 +1,8 @@
 site_name: gtrack
 site_description: GPlates-based Tracking of Lithosphere and Kinematics
 site_url: https://gtrack.gadopt.org
-repo_url: https://github.com/sghelichkhani/gtrack
-repo_name: sghelichkhani/gtrack
+repo_url: https://github.com/g-adopt/gtrack
+repo_name: g-adopt/gtrack
 
 theme:
   name: material

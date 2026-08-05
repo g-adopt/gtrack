@@ -11,7 +11,7 @@ pip install gtrack
 For development installation:
 
 ```bash
-git clone https://github.com/sghelichkhani/gtrack.git
+git clone https://github.com/g-adopt/gtrack.git
 cd gtrack
 pip install -e ".[dev]"
 ```
