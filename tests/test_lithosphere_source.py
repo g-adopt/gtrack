@@ -112,7 +112,8 @@ def fakes(monkeypatch, bind_signature):
     return FakeTracker
 
 
-def make_source(config=None, continental_data=100.0, oldest_age=400.0):
+def make_source(config=None, continental_data=100.0, oldest_age=400.0,
+                oceanic_amplitude=None):
     return LithosphereCloudSource(
         rotation_files=["rot.rot"],
         topology_files=["topo.gpml"],
@@ -122,6 +123,7 @@ def make_source(config=None, continental_data=100.0, oldest_age=400.0):
         age_to_property=lambda ages: 2.32 * np.sqrt(ages),
         oldest_age=oldest_age,
         config=config,
+        oceanic_amplitude=oceanic_amplitude,
     )
 
 
@@ -216,6 +218,26 @@ class TestCloud:
         for name in LithosphereCloudSource.provides:
             assert cloud.get_property(name) is not None
         assert set(cloud.properties) == set(LithosphereCloudSource.provides)
+
+    def test_no_surface_amplitude_by_default(self, fakes):
+        # Without a fade the channel is neither declared nor attached, so the
+        # default cloud is unchanged.
+        source = make_source()
+        assert "surface_amplitude" not in source.provides
+        cloud = source.at_age(300.0)
+        assert "surface_amplitude" not in cloud.properties
+
+    def test_surface_amplitude_fades_ocean_only(self, fakes):
+        # An oceanic fade weakens the ocean seeds (via their thickness) and
+        # pins continents at 1.0; the values are clipped to [0, 1].
+        source = make_source(oceanic_amplitude=lambda thickness_km: thickness_km / 10.0)
+        assert "surface_amplitude" in source.provides
+        cloud = source.at_age(300.0)
+        amp = cloud.get_property("surface_amplitude")
+        # Two ocean seeds first, one continental seed last.
+        thickness = cloud.get_property("thickness")
+        np.testing.assert_allclose(amp[:2], np.clip(thickness[:2] / 10.0, 0.0, 1.0))
+        assert amp[-1] == 1.0
 
     def test_ocean_then_continental(self, fakes):
         source = make_source()

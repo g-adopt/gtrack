@@ -126,12 +126,20 @@ class LithosphereCloudSource:
         here when no checkpoint is available.
     config : LithosphereCloudConfig, optional
         Tracker, reinit, checkpoint and continental knobs.
+    oceanic_amplitude : callable, optional
+        Maps an array of oceanic thickness (km) to a lateral amplitude in
+        ``[0, 1]``, applied to the oceanic seeds only. When given, the source
+        publishes a ``surface_amplitude`` channel (oceanic value clipped to
+        ``[0, 1]``, continental value fixed at ``1.0``) so a consumer can
+        weaken thin/young seafloor without touching continents. ``None`` (the
+        default) publishes no such channel.
 
     Attributes
     ----------
     provides : frozenset of str
-        ``{"thickness", "age"}``. Coordinates are carried by the cloud itself
-        and are deliberately not listed.
+        ``{"thickness", "age"}``, plus ``"surface_amplitude"`` when
+        ``oceanic_amplitude`` is given. Coordinates are carried by the cloud
+        itself and are deliberately not listed.
     monotonic_backward : bool
         True. Each ``at_age`` call must request an age no older than the last.
 
@@ -173,6 +181,7 @@ class LithosphereCloudSource:
         age_to_property: Callable[[np.ndarray], np.ndarray],
         oldest_age: float,
         config: Optional[LithosphereCloudConfig] = None,
+        oceanic_amplitude: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     ):
         if continental_polygons is None:
             raise ValueError("continental_polygons is required")
@@ -195,6 +204,16 @@ class LithosphereCloudSource:
         self.static_polygons = static_polygons
         self.oldest_age = oldest_age
         self.age_to_property = age_to_property
+
+        # Optional lateral amplitude for OCEANIC lithosphere only: maps oceanic
+        # thickness (km) to an amplitude in [0, 1]. Published as the
+        # ``surface_amplitude`` channel so a consumer can weaken thin/young
+        # seafloor (e.g. ridges) without touching continents, which are always
+        # 1.0. None keeps today's behaviour and does not publish the channel.
+        self._oceanic_amplitude = oceanic_amplitude
+        self.provides = frozenset({"thickness", "age"}) | (
+            {"surface_amplitude"} if oceanic_amplitude is not None else set()
+        )
 
         self._continental_data = continental_data
 
@@ -333,6 +352,21 @@ class LithosphereCloudSource:
             "age",
             np.full(continental.n_points, self.config.default_continental_age_myr),
         )
+
+        if self._oceanic_amplitude is not None:
+            ocean.add_property(
+                "surface_amplitude",
+                np.clip(
+                    self._oceanic_amplitude(ocean.get_property(self.PROPERTY_NAME)),
+                    0.0,
+                    1.0,
+                ),
+            )
+            # Continents never fade; carry the channel so concatenate keeps it.
+            continental.add_property(
+                "surface_amplitude",
+                np.ones(continental.n_points, dtype=float),
+            )
 
         self._last_walked_age = age
         return PointCloud.concatenate([ocean, continental], warn=False)
