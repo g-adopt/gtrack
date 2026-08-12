@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0 — 2026-08-12
+
+### Added — an optional oceanic surface amplitude, published as a channel
+
+`LithosphereCloudSource` now takes an optional `oceanic_amplitude` callable that
+maps oceanic thickness in km to a lateral amplitude in `[0, 1]`. When it is
+given, the source publishes a `surface_amplitude` channel alongside `thickness`
+and `age`: the oceanic seeds carry the (clipped) amplitude the callable returns,
+the continental seeds carry a flat `1.0`, and `provides` grows to name the new
+channel. Left at its default of `None` nothing changes — no callable runs and no
+channel is published, so existing consumers see exactly the clouds they saw
+before.
+
+The point is to let a consumer weaken thin, young seafloor without touching
+continents. The lithosphere indicator drives viscosity as `1000^indicator`, so a
+ridge that reads a full-strength lid prints a spurious signal in surface dynamic
+topography that no smoothing or depth knob can remove; fading the merged
+oceanic-plus-continental thickness removes it but then weakens thin cratonic and
+marginal lithosphere in the bargain. Publishing the amplitude per point, faded on
+the ocean and pinned to one on the continents, keeps the ocean-versus-continent
+decision here in the source where the two populations are still separate. It
+mirrors how `PolygonIndicatorSource` publishes `membership`, so a consumer only
+has to read the channel and multiply.
+
 ## 0.5.0 — 2026-08-04
 
 ### Changed — mid-ocean ridge seeding is now reproducible between processes, and this moves numbers
