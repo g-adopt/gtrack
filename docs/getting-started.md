@@ -40,9 +40,9 @@ from gtrack import SeafloorAgeTracker, TracerConfig
 
 # Configure parameters
 config = TracerConfig(
-    time_step=1.0,                    # Myr
-    default_refinement_levels=5,      # ~10,000 mesh points
-    ridge_sampling_degrees=0.5,       # ~50 km ridge tessellation
+    tracker_step_myr=1.0,
+    tracker_point_count=10000,
+    ridge_sampling_angle_deg=0.5,
 )
 
 # Compute ages

@@ -1,14 +1,8 @@
-"""
-MOR seed point generation using stage rotation (GPlately approach).
+"""Create source points along reconstructed mid-ocean ridges.
 
-This module provides functions to generate new seafloor points at
-mid-ocean ridges using the stage rotation between spreading plates.
-
-Sub-segments are visited through ``ordered_sub_segments`` so the seeds this
-module emits do not inherit the process-to-process permutation pygplates
-returns them in. All three loops here read nothing from a sub-segment except
-its resolved geometry, so a tie on the ordering key can only be a tie between
-identical shapes and cannot change what is emitted.
+PyGPlates does not guarantee the order of shared sub-segments. Because source
+order affects subsequent tracker calculations, all functions use
+`ordered_sub_segments` to impose an order from the resolved geometry.
 """
 
 import numpy as np
@@ -100,15 +94,13 @@ def generate_mor_seeds(
     time: float,
     topology_features,
     rotation_model: pygplates.RotationModel,
-    ridge_sampling_degrees: float = 0.5,
-    spreading_offset_degrees: float = 0.01,
+    ridge_sampling_angle_deg: float = 0.5,
+    ridge_offset_angle_deg: float = 0.01,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Generate MOR seed points using stage rotation approach.
+    """Create source-point pairs along reconstructed mid-ocean ridges.
 
-    For each mid-ocean ridge segment, creates pairs of points offset
-    perpendicular to the ridge using the stage rotation pole. This
-    ensures new crust is created on both sides of the spreading center.
+    The stage pole defines the spreading direction for each ridge segment.
+    Equal angular offsets place one zero-age point on each side of the ridge.
 
     Parameters
     ----------
@@ -118,9 +110,9 @@ def generate_mor_seeds(
         Topology feature files or collection.
     rotation_model : pygplates.RotationModel
         The rotation model.
-    ridge_sampling_degrees : float, default=0.5
+    ridge_sampling_angle_deg : float, default=0.5
         Resolution for tessellating ridges in degrees (~50 km at equator).
-    spreading_offset_degrees : float, default=0.01
+    ridge_offset_angle_deg : float, default=0.01
         Angle in degrees to rotate points off the ridge (~1 km).
         GPlately uses 0.01 degrees.
 
@@ -140,10 +132,9 @@ def generate_mor_seeds(
        - Extract the stage pole (spreading axis)
        - Tessellate the ridge at the sampling resolution
        - For each ridge point (excluding endpoints):
-         - Rotate +spreading_offset_degrees around stage pole
-         - Rotate -spreading_offset_degrees around stage pole
+         - Rotate by ``ridge_offset_angle_deg`` on each side of the ridge.
        - Add both rotated points (creating symmetric spreading)
-    3. All seed points have age=0 (just formed at ridge)
+    3. All source points have age=0 because they are newly formed at the ridge.
 
     This matches GPlately's `_generate_mid_ocean_ridge_points` function.
 
@@ -196,7 +187,7 @@ def generate_mor_seeds(
         # Create rotations to offset points from ridge
         # One rotates "left", the other "right" relative to spreading direction
         rotate_one_way = pygplates.FiniteRotation(
-            stage_pole, np.radians(spreading_offset_degrees)
+            stage_pole, np.radians(ridge_offset_angle_deg)
         )
         rotate_opposite_way = rotate_one_way.get_inverse()
 
@@ -205,7 +196,7 @@ def generate_mor_seeds(
             # Tessellate the ridge segment
             mor_points = pygplates.MultiPointOnSphere(
                 shared_sub_segment.get_resolved_geometry().to_tessellated(
-                    np.radians(ridge_sampling_degrees)
+                    np.radians(ridge_sampling_angle_deg)
                 )
             )
 
@@ -236,8 +227,8 @@ def generate_mor_seeds_with_plate_ids(
     time: float,
     topology_features,
     rotation_model: pygplates.RotationModel,
-    ridge_sampling_degrees: float = 0.5,
-    spreading_offset_degrees: float = 0.01,
+    ridge_sampling_angle_deg: float = 0.5,
+    ridge_offset_angle_deg: float = 0.01,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Generate MOR seed points with explicit plate ID assignments.
@@ -253,9 +244,9 @@ def generate_mor_seeds_with_plate_ids(
         Topology feature files or collection.
     rotation_model : pygplates.RotationModel
         The rotation model.
-    ridge_sampling_degrees : float, default=0.5
+    ridge_sampling_angle_deg : float, default=0.5
         Resolution for tessellating ridges in degrees.
-    spreading_offset_degrees : float, default=0.01
+    ridge_offset_angle_deg : float, default=0.01
         Angle in degrees to rotate points off the ridge.
 
     Returns
@@ -318,7 +309,7 @@ def generate_mor_seeds_with_plate_ids(
 
         # Create rotations to offset points
         rotate_one_way = pygplates.FiniteRotation(
-            stage_pole, np.radians(spreading_offset_degrees)
+            stage_pole, np.radians(ridge_offset_angle_deg)
         )
         rotate_opposite_way = rotate_one_way.get_inverse()
 
@@ -326,7 +317,7 @@ def generate_mor_seeds_with_plate_ids(
         for shared_sub_segment in ordered_sub_segments(shared_boundary_section):
             mor_points = pygplates.MultiPointOnSphere(
                 shared_sub_segment.get_resolved_geometry().to_tessellated(
-                    np.radians(ridge_sampling_degrees)
+                    np.radians(ridge_sampling_angle_deg)
                 )
             )
 

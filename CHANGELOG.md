@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.7.0 — 2026-08-17
+
+### Changed
+
+This release changes the public vocabulary after version 0.6.0. These changes
+break Python call sites that use the old names. Gtrack does not provide aliases
+for these development APIs.
+
+Use this migration list:
+
+- `SaturatingOceanicFade` → `OceanicLidWeight`
+- `surface_amplitude` → `lateral_weight`
+- `oceanic_amplitude` → `oceanic_weight_from_thickness`
+- `age_to_property` → `oceanic_thickness_from_age`
+- `oldest_age` → `plate_model_max_age_ma`
+- `walk_start_age` → `oldest_requested_age_ma`
+- `reinit_interval_myr` → `tracker_rebuild_interval_myr`
+- `default_continental_age_myr` → `continental_material_age_myr`
+- `continental_fallback_n` → `scalar_continental_point_count`
+- `zero_strength_age_myr` → `zero_weight_age_myr`
+- `full_strength_age_myr` → `full_weight_age_myr`
+- `H0_km` → `zero_weight_thickness_km`
+- `H1_km` → `full_weight_thickness_km`
+- `background_n` → `background_point_count`
+- `seed_fallback_n` → `scalar_input_point_count`
+- `seed_cloud` → `source_cloud`
+- `TracerConfig.time_step` → `TracerConfig.tracker_step_myr`
+- `default_mesh_points` → `tracker_point_count`
+- `earth_radius` → `earth_radius_m`
+- `initial_ocean_mean_spreading_rate` → `initial_spreading_rate_mm_per_yr`
+- `ridge_sampling_degrees` → `ridge_sampling_angle_deg`
+- `spreading_offset_degrees` → `ridge_offset_angle_deg`
+- `velocity_delta_threshold` → `collision_velocity_difference_km_per_myr`
+- `distance_threshold_per_myr` → `collision_distance_rate_km_per_myr`
+- `reinit_k_neighbors` → `tracker_rebuild_neighbor_count`
+- `reinit_max_distance` → `tracker_rebuild_max_distance_m`
+- `continental_reconstruction_interval` → GPlately dictionary boundary only
+- `SeafloorAgeTracker.reinitialize` → `SeafloorAgeTracker.tracker_rebuild`
+
+The `TracerConfig.to_dict()` and `TracerConfig.from_dict()` methods preserve the
+GPlately dictionary keys. This compatibility boundary includes `time_step` and
+`continental_reconstruction_interval`. Direct Python construction uses only the
+new gtrack names.
+
+The matching G-ADOPT interface must read the `lateral_weight` channel. It must
+also use the new source, material-age, reconstruction-age, and tracker names.
+G-ADOPT must require the first gtrack release that contains this contract.
+
 ## 0.6.0 — 2026-08-12
 
 ### Added — an optional oceanic surface amplitude, published as a channel

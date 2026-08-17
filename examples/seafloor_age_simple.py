@@ -49,22 +49,22 @@ continental_polygons = data_dir / \
 # +
 config = TracerConfig(
     # Time stepping
-    time_step=1.0,  # Time step size (Myr)
+    tracker_step_myr=1.0,
 
     # Mesh initialization - number of points on Fibonacci sphere
     # 10000 points gives ~115 km spacing, 40000 gives ~57 km spacing
-    default_mesh_points=10000,
+    tracker_point_count=10000,
 
     # Initial age calculation
-    initial_ocean_mean_spreading_rate=75.0,  # mm/yr (GPlately default)
+    initial_spreading_rate_mm_per_yr=75.0,
 
     # MOR seed generation
-    ridge_sampling_degrees=0.5,    # Ridge tessellation (~50 km at equator)
-    spreading_offset_degrees=0.01,  # Offset from ridge (~1 km)
+    ridge_sampling_angle_deg=0.5,
+    ridge_offset_angle_deg=0.01,
 
     # Collision detection (C++ backend - GPlately compatible)
-    velocity_delta_threshold=7.0,      # km/Myr (converted to 0.7 cm/yr)
-    distance_threshold_per_myr=10.0,   # km/Myr
+    collision_velocity_difference_km_per_myr=7.0,
+    collision_distance_rate_km_per_myr=10.0,
 )
 # -
 

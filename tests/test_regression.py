@@ -51,13 +51,13 @@ MESH_POINTS = 10242
 def _run_tracker_200_to_180():
     """Run tracker from 200 Ma to 180 Ma with 1 Myr timesteps."""
     config = TracerConfig(
-        time_step=1.0,
-        default_mesh_points=MESH_POINTS,
-        initial_ocean_mean_spreading_rate=75.0,
-        ridge_sampling_degrees=2.0,
-        spreading_offset_degrees=0.01,
-        velocity_delta_threshold=7.0,
-        distance_threshold_per_myr=10.0,
+        tracker_step_myr=1.0,
+        tracker_point_count=MESH_POINTS,
+        initial_spreading_rate_mm_per_yr=75.0,
+        ridge_sampling_angle_deg=2.0,
+        ridge_offset_angle_deg=0.01,
+        collision_velocity_difference_km_per_myr=7.0,
+        collision_distance_rate_km_per_myr=10.0,
     )
 
     tracker = SeafloorAgeTracker(

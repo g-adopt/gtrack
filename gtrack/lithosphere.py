@@ -1,17 +1,7 @@
-"""Lithospheric thickness clouds through geological time.
+"""Lithosphere source points through geological time.
 
-Combines two populations into one labelled cloud per age: oceanic seeds carried
-by a forward-walking seafloor age tracker, and continental seeds rotated back
-from their present-day positions. The oceanic half carries a real seafloor age
-and a thickness derived from it; the continental half carries a nominal age and
-its present-day thickness.
-
-The ocean tracker is the only stateful piece. It advances forward in geological
-time — towards decreasing age — and cannot rewind, which is why this source
-declares ``monotonic_backward``.
-
-This module is serial and knows nothing about MPI. A parallel consumer is
-expected to run it on one rank and broadcast the result itself.
+The source combines oceanic and continental source points. The ocean tracker
+advances towards younger geological ages and cannot rewind.
 """
 
 from dataclasses import dataclass, field
@@ -29,73 +19,143 @@ from .polygon_filter import PolygonFilter
 logger = get_logger(__name__)
 
 
+def quintic_smoothstep(x: np.ndarray) -> np.ndarray:
+    """Return a clamped quintic transition with two continuous derivatives."""
+    x = np.clip(np.asarray(x, dtype=float), 0.0, 1.0)
+    return x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+
+
+class OceanicLidWeight:
+    """Map oceanic thickness to a dimensionless lateral weight.
+
+    The result is zero at and below `zero_weight_thickness_km`.
+    It is one at and above `full_weight_thickness_km`.
+    A quintic transition joins these limits.
+
+    Parameters
+    ----------
+    oceanic_thickness_from_age : callable
+        Map an oceanic material age in Myr to a thickness in km.
+    full_weight_age_myr : float, default=15.0
+        Material age used to calculate `full_weight_thickness_km`.
+    zero_weight_age_myr : float, default=1.0
+        Material age used to calculate `zero_weight_thickness_km`.
+
+    Examples
+    --------
+    >>> weight = OceanicLidWeight(oceanic_thickness_from_age=half_space_cooling)
+    >>> source = LithosphereCloudSource(
+    ...     ..., oceanic_weight_from_thickness=weight
+    ... )
+    """
+
+    def __init__(
+        self,
+        oceanic_thickness_from_age: Callable[[np.ndarray], np.ndarray],
+        full_weight_age_myr: float = 15.0,
+        zero_weight_age_myr: float = 1.0,
+    ):
+        if not (zero_weight_age_myr < full_weight_age_myr):
+            raise ValueError(
+                "zero_weight_age_myr must be less than full_weight_age_myr "
+                f"(got {zero_weight_age_myr} and {full_weight_age_myr})"
+            )
+
+        def _thickness_at(age_myr: float) -> float:
+            return float(np.ravel(oceanic_thickness_from_age(
+                np.array([age_myr], dtype=float)
+            ))[0])
+
+        self.full_weight_age_myr = float(full_weight_age_myr)
+        self.zero_weight_age_myr = float(zero_weight_age_myr)
+        self.zero_weight_thickness_km = _thickness_at(zero_weight_age_myr)
+        self.full_weight_thickness_km = _thickness_at(full_weight_age_myr)
+
+        # A large material age estimates the thickness cap of the cooling map.
+        cap_km = _thickness_at(1.0e6)
+        if not (self.full_weight_thickness_km > self.zero_weight_thickness_km):
+            raise ValueError(
+                "full_weight_thickness_km must exceed zero_weight_thickness_km"
+            )
+        if self.full_weight_thickness_km >= cap_km - 1e-9:
+            raise ValueError(
+                f"full_weight_age_myr={full_weight_age_myr} gives a thickness at "
+                f"or above the {cap_km:.1f} km thickness cap"
+            )
+
+        logger.info(
+            "OceanicLidWeight: zero<=%.3g Myr (%.1f km), full>=%.3g Myr "
+            "(%.1f km), cap=%.1f km",
+            self.zero_weight_age_myr, self.zero_weight_thickness_km,
+            self.full_weight_age_myr, self.full_weight_thickness_km, cap_km,
+        )
+
+    def __call__(self, thickness_km: np.ndarray) -> np.ndarray:
+        return quintic_smoothstep(
+            (np.asarray(thickness_km, dtype=float) - self.zero_weight_thickness_km)
+            / (self.full_weight_thickness_km - self.zero_weight_thickness_km)
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"OceanicLidWeight(full_weight_age_myr={self.full_weight_age_myr:g}, "
+            f"zero_weight_age_myr={self.zero_weight_age_myr:g}, "
+            f"zero_weight_thickness_km={self.zero_weight_thickness_km:.1f}, "
+            f"full_weight_thickness_km={self.full_weight_thickness_km:.1f})"
+        )
+
+
 @dataclass(frozen=True)
 class LithosphereCloudConfig:
-    """Knobs for :class:`LithosphereCloudSource`.
+    """Configure :class:`LithosphereCloudSource`.
 
     Parameters
     ----------
     tracer : TracerConfig
-        Configuration for the seafloor age tracker, nested rather than
-        flattened. Every tracker knob has exactly one home here, including
-        ``time_step`` and ``default_mesh_points``.
-    reinit_interval_myr : float, default=50.0
-        Age separation after which the tracker's mesh is regenerated and ages
-        re-interpolated onto it.
+        Configuration for the seafloor age tracker.
+    tracker_rebuild_interval_myr : float, default=50.0
+        Elapsed time between tracker rebuilds.
     checkpoint : CheckpointPolicy, optional
-        Where to write ocean-tracker checkpoints and how often. None disables
-        checkpointing entirely. The directory is not created here; create it
-        before constructing the source so a mistyped path fails at wiring time.
-    default_continental_age_myr : float, default=500.0
-        Age assigned to continental seeds, which carry no seafloor age of
-        their own.
-    walk_start_age : float, optional
-        The oldest age that will ever be requested. Declaring it makes an
-        out-of-range request fail immediately rather than silently fixing the
-        walk's ceiling at whatever age happens to be asked for first. It does
-        NOT permit revisiting ages already stepped past.
-    continental_fallback_n : int, default=20000
-        Number of points in the sphere mesh a SCALAR continental thickness is
-        broadcast onto. Ignored for every other input shape, which brings its
-        own points.
-
-    Notes
-    -----
-    ``tracer`` being a nested config rather than a dict of overrides is the
-    substance of this class, not a stylistic choice. A design in which some
-    tracker knobs are fields here and the rest arrive in a passthrough dict
-    lets the dict silently win, so a field set on this object is discarded
-    without warning. One home per knob makes that unexpressible.
+        Checkpoint directory and interval for the ocean tracker. `None` disables
+        checkpoints. The directory must exist before source construction.
+    continental_material_age_myr : float, default=500.0
+        Material age for continental source points.
+    oldest_requested_age_ma : float, optional
+        Oldest geological age that the source will receive.
+    scalar_continental_point_count : int, default=20000
+        Source-point count for a scalar continental thickness. Other input
+        forms supply their own source points.
 
     Examples
     --------
     >>> config = LithosphereCloudConfig(
-    ...     tracer=TracerConfig(time_step=2.0, default_mesh_points=10000),
-    ...     reinit_interval_myr=50.0,
+    ...     tracer=TracerConfig(tracker_step_myr=2.0, tracker_point_count=10000),
+    ...     tracker_rebuild_interval_myr=50.0,
     ... )
     """
 
     tracer: TracerConfig = field(default_factory=TracerConfig)
-    reinit_interval_myr: float = 50.0
+    tracker_rebuild_interval_myr: float = 50.0
     checkpoint: Optional[CheckpointPolicy] = None
-    default_continental_age_myr: float = 500.0
-    walk_start_age: Optional[float] = None
-    continental_fallback_n: int = 20000
+    continental_material_age_myr: float = 500.0
+    oldest_requested_age_ma: Optional[float] = None
+    scalar_continental_point_count: int = 20000
 
     def __post_init__(self):
-        if self.reinit_interval_myr <= 0:
+        if self.tracker_rebuild_interval_myr <= 0:
             raise ValueError(
-                f"reinit_interval_myr must be positive, "
-                f"got {self.reinit_interval_myr}"
+                "tracker_rebuild_interval_myr must be positive, "
+                f"got {self.tracker_rebuild_interval_myr}"
             )
-        if self.walk_start_age is not None and self.walk_start_age < 0:
+        if self.oldest_requested_age_ma is not None and self.oldest_requested_age_ma < 0:
             raise ValueError(
-                f"walk_start_age must be non-negative, got {self.walk_start_age}"
+                "oldest_requested_age_ma must be non-negative, "
+                f"got {self.oldest_requested_age_ma}"
             )
-        if self.continental_fallback_n < 1:
+        if self.scalar_continental_point_count < 1:
             raise ValueError(
-                f"continental_fallback_n must be positive, "
-                f"got {self.continental_fallback_n}"
+                "scalar_continental_point_count must be positive, "
+                f"got {self.scalar_continental_point_count}"
             )
 
 
@@ -118,37 +178,27 @@ class LithosphereCloudSource:
     continental_data : PointCloud or str or Path or tuple or int or float
         Present-day continental thickness, in anything
         :meth:`~gtrack.point_rotation.PointCloud.from_data` accepts.
-    age_to_property : callable
+    oceanic_thickness_from_age : callable
         Maps an array of seafloor ages in Myr to the tracked property,
         typically thickness in km via half-space cooling.
-    oldest_age : float
+    plate_model_max_age_ma : float
         Oldest age the plate model covers, in Ma. The tracker starts its walk
         here when no checkpoint is available.
     config : LithosphereCloudConfig, optional
-        Tracker, reinit, checkpoint and continental knobs.
-    oceanic_amplitude : callable, optional
-        Maps an array of oceanic thickness (km) to a lateral amplitude in
-        ``[0, 1]``, applied to the oceanic seeds only. When given, the source
-        publishes a ``surface_amplitude`` channel (oceanic value clipped to
-        ``[0, 1]``, continental value fixed at ``1.0``) so a consumer can
-        weaken thin/young seafloor without touching continents. ``None`` (the
-        default) publishes no such channel.
+        Tracker, rebuild, checkpoint, and continental parameters.
+    oceanic_weight_from_thickness : callable, optional
+        Maps oceanic thickness in km to a lateral weight in ``[0, 1]``.
+        Continental source points receive a lateral weight of one. If the
+        argument is ``None``, the source does not publish this channel.
 
     Attributes
     ----------
     provides : frozenset of str
-        ``{"thickness", "age"}``, plus ``"surface_amplitude"`` when
-        ``oceanic_amplitude`` is given. Coordinates are carried by the cloud
-        itself and are deliberately not listed.
+        ``{"thickness", "age"}``, plus ``"lateral_weight"`` when
+        ``oceanic_weight_from_thickness`` is given. The ``age`` channel contains
+        the material age in Myr.
     monotonic_backward : bool
         True. Each ``at_age`` call must request an age no older than the last.
-
-    Notes
-    -----
-    Construction is cheap and touches no reconstruction data. The tracker,
-    rotator, polygon filter and present-day continental cloud are all built on
-    the first :meth:`at_age`, so a source can be constructed and inspected —
-    and a consumer wired up and tested — without any plate files being read.
 
     Examples
     --------
@@ -158,8 +208,8 @@ class LithosphereCloudSource:
     ...     continental_polygons=cont_polys,
     ...     static_polygons=static_polys,
     ...     continental_data=100.0,
-    ...     age_to_property=lambda ages: 2.32 * np.sqrt(ages),
-    ...     oldest_age=400.0,
+    ...     oceanic_thickness_from_age=lambda ages: 2.32 * np.sqrt(ages),
+    ...     plate_model_max_age_ma=400.0,
     ... )
     >>> cloud = source.at_age(200.0)
     """
@@ -167,8 +217,7 @@ class LithosphereCloudSource:
     provides = frozenset({"thickness", "age"})
     monotonic_backward = True
 
-    #: Name the thickness is attached under. Fixed rather than configurable,
-    #: because ``provides`` names it and the two must agree.
+    #: Name of the thickness channel.
     PROPERTY_NAME = "thickness"
 
     def __init__(
@@ -178,46 +227,45 @@ class LithosphereCloudSource:
         continental_polygons,
         static_polygons,
         continental_data,
-        age_to_property: Callable[[np.ndarray], np.ndarray],
-        oldest_age: float,
+        oceanic_thickness_from_age: Callable[[np.ndarray], np.ndarray],
+        plate_model_max_age_ma: float,
         config: Optional[LithosphereCloudConfig] = None,
-        oceanic_amplitude: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        oceanic_weight_from_thickness: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     ):
         if continental_polygons is None:
             raise ValueError("continental_polygons is required")
         if static_polygons is None:
             raise ValueError("static_polygons is required")
-        if oldest_age <= 0:
-            raise ValueError(f"oldest_age must be positive, got {oldest_age}")
+        if plate_model_max_age_ma <= 0:
+            raise ValueError(
+                f"plate_model_max_age_ma must be positive, got {plate_model_max_age_ma}"
+            )
 
         self.config = config or LithosphereCloudConfig()
-        if (self.config.walk_start_age is not None
-                and self.config.walk_start_age > oldest_age):
+        if (self.config.oldest_requested_age_ma is not None
+                and self.config.oldest_requested_age_ma > plate_model_max_age_ma):
             raise ValueError(
-                f"walk_start_age ({self.config.walk_start_age}) is older than "
-                f"the plate model's oldest age ({oldest_age})."
+                f"oldest_requested_age_ma ({self.config.oldest_requested_age_ma}) "
+                f"exceeds plate_model_max_age_ma ({plate_model_max_age_ma})"
             )
 
         self.rotation_files = rotation_files
         self.topology_files = topology_files
         self.continental_polygons = continental_polygons
         self.static_polygons = static_polygons
-        self.oldest_age = oldest_age
-        self.age_to_property = age_to_property
+        self.plate_model_max_age_ma = plate_model_max_age_ma
+        self.oceanic_thickness_from_age = oceanic_thickness_from_age
 
-        # Optional lateral amplitude for OCEANIC lithosphere only: maps oceanic
-        # thickness (km) to an amplitude in [0, 1]. Published as the
-        # ``surface_amplitude`` channel so a consumer can weaken thin/young
-        # seafloor (e.g. ridges) without touching continents, which are always
-        # 1.0. None keeps today's behaviour and does not publish the channel.
-        self._oceanic_amplitude = oceanic_amplitude
+        # This map supplies the lateral weight for oceanic source points.
+        # Continental source points use a lateral weight of one.
+        self._oceanic_weight_from_thickness = oceanic_weight_from_thickness
         self.provides = frozenset({"thickness", "age"}) | (
-            {"surface_amplitude"} if oceanic_amplitude is not None else set()
+            {"lateral_weight"} if oceanic_weight_from_thickness is not None else set()
         )
 
         self._continental_data = continental_data
 
-        # Built on first use, never in __init__.
+        # Delay plate-model I/O until the first source request.
         self._tracker = None
         self._rotator = None
         self._continental_filter = None
@@ -225,7 +273,7 @@ class LithosphereCloudSource:
 
         self._initialized = False
         self._last_walked_age = None
-        self._last_reinit_age = None
+        self._last_tracker_rebuild_age = None
         self._last_checkpoint_age = None
 
     # -- construction ------------------------------------------------------
@@ -256,7 +304,7 @@ class LithosphereCloudSource:
         cloud = PointCloud.from_data(
             self._continental_data,
             self.PROPERTY_NAME,
-            n_points_fallback=self.config.continental_fallback_n,
+            n_points_fallback=self.config.scalar_continental_point_count,
         )
         n_before = cloud.n_points
         cloud = self._continental_filter.filter_inside(cloud, at_age=0.0)
@@ -265,11 +313,8 @@ class LithosphereCloudSource:
                 "continental data filtered %d -> %d points (%.1f%% retained)",
                 n_before, cloud.n_points, 100 * cloud.n_points / n_before,
             )
-        # Deliberately no plate-id assignment: the topological rotator advects
-        # every seed by whatever plate or network contains it and does not need
-        # ids, and dropping seeds whose static-polygon id has no rotation
-        # circuit would bias the result at exactly the passive margins that
-        # matter.
+        # Do not assign static plate IDs here. The topological rotator finds the
+        # plate or network that contains each source point at each time.
         return cloud
 
     # -- age contract ------------------------------------------------------
@@ -277,14 +322,8 @@ class LithosphereCloudSource:
     def validate_age(self, age: float) -> None:
         """Raise if ``age`` cannot be served.
 
-        Three checks, in order of how early they can fire.
-
-        The range check rejects a negative age or one older than the plate
-        model covers. The promise check rejects an age older than a declared
-        ``walk_start_age``, and fires before any walking has happened, so a
-        mis-wired consumer fails at setup rather than mid-run. The floor check
-        rejects an age older than one already walked past, which is
-        unreachable because the tracker cannot rewind.
+        The method checks the model range and `oldest_requested_age_ma`.
+        It also rejects a request that requires the tracker to rewind.
 
         Parameters
         ----------
@@ -300,19 +339,16 @@ class LithosphereCloudSource:
             raise ValueError(
                 f"Requested age {age:.2f} Ma is negative (in the future)."
             )
-        if age > self.oldest_age:
+        if age > self.plate_model_max_age_ma:
             raise ValueError(
                 f"Requested age {age:.2f} Ma is older than the plate model's "
-                f"oldest age ({self.oldest_age:.2f} Ma)."
+                f"maximum age ({self.plate_model_max_age_ma:.2f} Ma)."
             )
-        walk_start_age = self.config.walk_start_age
-        if walk_start_age is not None and age > walk_start_age:
+        oldest_requested_age_ma = self.config.oldest_requested_age_ma
+        if oldest_requested_age_ma is not None and age > oldest_requested_age_ma:
             raise ValueError(
                 f"Requested age {age:.2f} Ma is older than the declared "
-                f"walk_start_age ({walk_start_age:.2f} Ma). Raise "
-                f"walk_start_age to the oldest age you will request, or "
-                f"request a younger age. The tracker walks forward only, "
-                f"towards decreasing age."
+                f"oldest_requested_age_ma ({oldest_requested_age_ma:.2f} Ma)"
             )
         if self._last_walked_age is not None and age > self._last_walked_age:
             raise ValueError(
@@ -334,15 +370,16 @@ class LithosphereCloudSource:
         Returns
         -------
         PointCloud
-            Oceanic seeds followed by continental seeds, carrying
-            ``thickness`` and ``age``.
+            Oceanic source points followed by continental source points. The
+            source points carry `thickness` and `age`.
         """
         self.validate_age(age)
         self._ensure_loaded()
 
         ocean = self._step_ocean_to(age)
         ocean.add_property(
-            self.PROPERTY_NAME, self.age_to_property(ocean.get_property("age"))
+            self.PROPERTY_NAME,
+            self.oceanic_thickness_from_age(ocean.get_property("age")),
         )
 
         continental = self._rotator.rotate(
@@ -350,21 +387,23 @@ class LithosphereCloudSource:
         )
         continental.add_property(
             "age",
-            np.full(continental.n_points, self.config.default_continental_age_myr),
+            np.full(continental.n_points, self.config.continental_material_age_myr),
         )
 
-        if self._oceanic_amplitude is not None:
+        if self._oceanic_weight_from_thickness is not None:
             ocean.add_property(
-                "surface_amplitude",
+                "lateral_weight",
                 np.clip(
-                    self._oceanic_amplitude(ocean.get_property(self.PROPERTY_NAME)),
+                    self._oceanic_weight_from_thickness(
+                        ocean.get_property(self.PROPERTY_NAME)
+                    ),
                     0.0,
                     1.0,
                 ),
             )
-            # Continents never fade; carry the channel so concatenate keeps it.
+            # Continental source points have a uniform lateral weight.
             continental.add_property(
-                "surface_amplitude",
+                "lateral_weight",
                 np.ones(continental.n_points, dtype=float),
             )
 
@@ -374,12 +413,7 @@ class LithosphereCloudSource:
     # -- the walk ----------------------------------------------------------
 
     def _initialize_walk(self, age: float) -> None:
-        """Start the walk, from a checkpoint when one is usable.
-
-        Idempotent. Distinct from building the machinery: this establishes the
-        tracker's age state, which the machinery does not have until it is
-        either initialised at the model's oldest age or restored from a file.
-        """
+        """Start the tracker from a checkpoint or the model maximum age."""
         if self._initialized:
             return
         loaded = False
@@ -391,33 +425,34 @@ class LithosphereCloudSource:
                 loaded_age = self._tracker.current_age
                 logger.debug("loaded ocean checkpoint at %s Ma from %s",
                              loaded_age, best)
-                self._last_reinit_age = loaded_age
+                self._last_tracker_rebuild_age = loaded_age
                 self._last_checkpoint_age = loaded_age
                 loaded = True
             except Exception as exc:
-                # A damaged or incompatible checkpoint must not end the run:
-                # the full walk reproduces the same state, only slower.
+                # A full tracker walk recovers from a damaged or incompatible
+                # checkpoint without changing the calculated state.
                 logger.info("failed to load checkpoint %s: %s. "
                             "Falling back to a full walk.", best, exc)
         if not loaded:
             # pyGplates works in whole Ma.
-            starting_age = int(self.oldest_age)
+            starting_age = int(self.plate_model_max_age_ma)
             logger.debug("initialising ocean tracker at %d Ma", starting_age)
             self._tracker.initialize(starting_age=starting_age)
-            self._last_reinit_age = starting_age
+            self._last_tracker_rebuild_age = starting_age
         self._initialized = True
 
     def _step_ocean_to(self, age: float) -> PointCloud:
-        """Advance the tracker to ``age``, reinitialising and saving as due."""
+        """Advance the tracker to ``age`` and do scheduled maintenance."""
         self._initialize_walk(age)
 
-        if (self._last_reinit_age is not None
-                and abs(self._last_reinit_age - age) >= self.config.reinit_interval_myr):
-            logger.debug("reinitialising ocean tracker at %.2f Ma", age)
-            self._tracker.reinitialize(
-                n_points=self.config.tracer.default_mesh_points
+        if (self._last_tracker_rebuild_age is not None
+                and abs(self._last_tracker_rebuild_age - age)
+                >= self.config.tracker_rebuild_interval_myr):
+            logger.debug("rebuilding the ocean tracker at %.2f Ma", age)
+            self._tracker.tracker_rebuild(
+                n_points=self.config.tracer.tracker_point_count
             )
-            self._last_reinit_age = age
+            self._last_tracker_rebuild_age = age
 
         cloud = self._tracker.step_to(int(round(age)))
         self._save_checkpoint_if_due(age)
@@ -438,7 +473,6 @@ class LithosphereCloudSource:
             logger.debug("saved ocean checkpoint at %d Ma -> %s",
                          rounded_age, filepath)
         except Exception as exc:
-            # Losing a checkpoint costs time on a later run, not correctness
-            # of this one.
+            # A failed checkpoint write affects restart cost, not this result.
             logger.info("failed to save checkpoint at %d Ma: %s",
                         rounded_age, exc)

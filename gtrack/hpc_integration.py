@@ -1,8 +1,6 @@
-"""
-Seafloor age tracking using Lagrangian particle tracking.
+"""Track seafloor material age with reconstructed Lagrangian points.
 
-This module provides the main API for computing seafloor ages
-using pygplates' C++ backend for efficient reconstruction.
+PyGPlates reconstructs the points and applies collision rules.
 """
 
 import gc
@@ -23,18 +21,11 @@ logger = get_logger(__name__)
 
 
 class SeafloorAgeTracker:
-    """
-    Seafloor age tracker using Lagrangian particle tracking with C++ backend.
+    """Track seafloor material age through geological time.
 
-    Uses pygplates.TopologicalModel.reconstruct_geometry() for efficient
-    point advection with built-in collision detection.
-
-    Key features:
-    - GPlately-compatible: Matches GPlately's SeafloorGrid output
-    - C++ backend: Fast reconstruction using pygplates internals
-    - Icosahedral initialization: Full ocean coverage from start
-    - Continental filtering: Via polygon queries with caching
-    - Checkpointing: Save/restore state for restarts
+    `pygplates.TopologicalModel.reconstruct_geometry` advects the tracker points.
+    Collision rules deactivate points at convergent boundaries.
+    New zero-age points enter along reconstructed mid-ocean ridges.
 
     Parameters
     ----------
@@ -43,27 +34,18 @@ class SeafloorAgeTracker:
     topology_files : list of str
         Paths to topology/plate boundary files (.gpml/.gpmlz).
     continental_polygons : str, optional
-        Path to continental polygon file. If None, tracers are not
-        removed when they enter continental regions.
+        Continental polygon file. If `None`, continental filtering is disabled.
     config : TracerConfig, optional
-        Configuration parameters. If None, uses defaults.
-    verbose : bool, default=True
-        Deprecated. Use GTRACK_LOGLEVEL environment variable instead.
-        Set GTRACK_LOGLEVEL=INFO for progress messages or DEBUG for details.
+        Tracker configuration. If `None`, use `TracerConfig` defaults.
 
     Examples
     --------
-    >>> # Initialize tracker
     >>> tracker = SeafloorAgeTracker(
     ...     rotation_files=['rotations.rot'],
     ...     topology_files=['topologies.gpmlz'],
     ...     continental_polygons='continents.gpmlz'
     ... )
-    >>>
-    >>> # Initialize with sphere mesh (GPlately-compatible)
     >>> tracker.initialize(starting_age=200)
-    >>>
-    >>> # Step forward (decreasing geological age toward present)
     >>> for target_age in range(199, -1, -1):
     ...     cloud = tracker.step_to(target_age)
     ...     xyz = cloud.xyz
@@ -81,7 +63,6 @@ class SeafloorAgeTracker:
 
         self._config = config if config else TracerConfig()
 
-        # Handle single file or Path as list
         rotation_files = ensure_list(rotation_files)
         topology_files = ensure_list(topology_files)
 
@@ -91,20 +72,15 @@ class SeafloorAgeTracker:
 
         logger.info("Initializing SeafloorAgeTracker...")
 
-        # Load rotation model
         self._rotation_model = pygplates.RotationModel(rotation_files)
 
-        # Load topology features (accepts single filename, list, or features)
         self._topology_features = load_features(topology_files)
 
-        # Create TopologicalModel for C++ backend reconstruction
         self._topological_model = pygplates.TopologicalModel(
             self._topology_features, self._rotation_model
         )
 
-        # Set up continental polygon cache.  During forward time-stepping we
-        # reconstruct polygons at the exact time each step, so a small cache
-        # of recent reconstructions avoids redundant pygplates calls.
+        # Cache recent continental reconstructions at their exact step ages.
         if continental_polygons is not None:
             self._continental_cache = ContinentalPolygonCache(
                 continental_polygons,
@@ -114,7 +90,6 @@ class SeafloorAgeTracker:
         else:
             self._continental_cache = None
 
-        # State variables
         self._current_age: Optional[float] = None
         self._lats: Optional[np.ndarray] = None
         self._lons: Optional[np.ndarray] = None
@@ -129,33 +104,29 @@ class SeafloorAgeTracker:
         starting_age: float,
         method: str = 'mesh',
         n_points: Optional[int] = None,
-        initial_ocean_mean_spreading_rate: Optional[float] = None,
+        initial_spreading_rate_mm_per_yr: Optional[float] = None,
         age_distance_law: Optional[Callable[[np.ndarray, float], np.ndarray]] = None,
     ) -> int:
-        """
-        Initialize tracers for given geological age.
+        """Initialise tracker points at one geological age.
 
         Parameters
         ----------
         starting_age : float
-            Starting geological age (Ma). Tracers are placed based on
-            ocean structure at this age.
+            Starting geological age in Ma.
         method : str, default='mesh'
-            Initialization method:
-            - 'mesh': Full ocean mesh with computed ages (GPlately-compatible)
-            - 'ridge_only': Tracers only at ridges with age=0 (legacy gtrack)
+            Use `mesh` for complete ocean coverage.
+            Use `ridge_only` for zero-age points along ridges.
         n_points : int, optional
-            Number of points for the sphere mesh. If None, uses config default.
-        initial_ocean_mean_spreading_rate : float, optional
-            Spreading rate for age calculation (mm/yr). If None, uses config default.
+            Initial point count. If `None`, use `config.tracker_point_count`.
+        initial_spreading_rate_mm_per_yr : float, optional
+            Spreading rate for the initial age calculation in mm/yr.
         age_distance_law : callable, optional
-            Custom function to convert distance to age.
-            Signature: (distances_km, spreading_rate_mm_yr) -> ages_myr
+            Map distance in km and spreading rate in mm/yr to material age in Myr.
 
         Returns
         -------
         int
-            Number of tracers initialized.
+            Number of initial tracker points.
 
         Examples
         --------
@@ -171,9 +142,9 @@ class SeafloorAgeTracker:
         >>> tracker.initialize(starting_age=200, age_distance_law=my_age_law)
         """
         if n_points is None:
-            n_points = self._config.default_mesh_points
-        if initial_ocean_mean_spreading_rate is None:
-            initial_ocean_mean_spreading_rate = self._config.initial_ocean_mean_spreading_rate
+            n_points = self._config.tracker_point_count
+        if initial_spreading_rate_mm_per_yr is None:
+            initial_spreading_rate_mm_per_yr = self._config.initial_spreading_rate_mm_per_yr
 
         logger.info(f"Initializing tracers at {starting_age} Ma (method='{method}')...")
 
@@ -181,7 +152,7 @@ class SeafloorAgeTracker:
             self._initialize_mesh(
                 starting_age,
                 n_points,
-                initial_ocean_mean_spreading_rate,
+                initial_spreading_rate_mm_per_yr,
                 age_distance_law,
             )
         elif method == 'ridge_only':
@@ -250,7 +221,7 @@ class SeafloorAgeTracker:
             ocean_points,
             resolved_topologies,
             shared_boundary_sections,
-            initial_ocean_mean_spreading_rate=spreading_rate,
+            initial_spreading_rate_mm_per_yr=spreading_rate,
             age_distance_law=age_distance_law,
         )
 
@@ -266,8 +237,8 @@ class SeafloorAgeTracker:
             starting_age,
             self._topology_features,
             self._rotation_model,
-            ridge_sampling_degrees=self._config.ridge_sampling_degrees,
-            spreading_offset_degrees=self._config.spreading_offset_degrees,
+            ridge_sampling_angle_deg=self._config.ridge_sampling_angle_deg,
+            ridge_offset_angle_deg=self._config.ridge_offset_angle_deg,
         )
 
         self._lats = lats
@@ -305,8 +276,8 @@ class SeafloorAgeTracker:
         """
         if 'age' not in cloud.properties:
             raise ValueError(
-                "PointCloud must have 'age' property. "
-                "This should contain the material age of each tracer."
+                "PointCloud must have an 'age' property that contains "
+                "the material age of each tracer."
             )
 
         logger.info(f"Initializing from PointCloud at {current_age} Ma...")
@@ -364,26 +335,20 @@ class SeafloorAgeTracker:
 
         logger.info(f"Evolving: {self._current_age} Ma -> {target_age} Ma")
 
-        # Process in time_step increments
         time = self._current_age
         while time > target_age:
-            next_time = max(time - self._config.time_step, target_age)
+            next_time = max(time - self._config.tracker_step_myr, target_age)
 
             if len(self._lats) == 0:
                 logger.warning("  No points to reconstruct")
                 break
 
-            # Create MultiPointOnSphere from lat/lon tuples (faster than individual PointOnSphere)
             points = pygplates.MultiPointOnSphere(
                 zip(self._lats, self._lons)
             )
 
-            # Each outer iteration is a single pygplates reconstruction step
-            # of length `span`, so we pass `time_increment=span` and the
-            # divisibility constraint `(initial_time - youngest_time) /
-            # time_increment == 1` is satisfied by construction. This lets
-            # any positive float time_step work, including the clamped final
-            # step where span may be smaller than the nominal time_step.
+            # One PyGPlates step spans this complete interval. This satisfies
+            # its divisibility constraint for a shortened final tracker step.
             span = time - next_time
             reconstructed_time_span = self._topological_model.reconstruct_geometry(
                 points,
@@ -391,29 +356,24 @@ class SeafloorAgeTracker:
                 youngest_time=next_time,
                 time_increment=span,
                 deactivate_points=pygplates.ReconstructedGeometryTimeSpan.DefaultDeactivatePoints(
-                    threshold_velocity_delta=self._config.velocity_delta_threshold_cm_yr,
-                    threshold_distance_to_boundary=self._config.distance_threshold_per_myr,
+                    threshold_velocity_delta=self._config.collision_velocity_difference_cm_per_yr,
+                    threshold_distance_to_boundary=self._config.collision_distance_rate_km_per_myr,
                     deactivate_points_that_fall_outside_a_network=True,
                 ),
             )
 
-            # Get reconstructed points (inactive points are None)
             reconstructed_points = reconstructed_time_span.get_geometry_points(
                 next_time, return_inactive_points=True
             )
 
-            # Update coordinates and ages, removing inactive points
             self._update_from_reconstructed(reconstructed_points, time - next_time)
 
-            # Remove continental points
             if self._continental_cache is not None:
                 self._remove_continental_points(next_time)
 
-            # Add new MOR seed points
             self._add_mor_seeds(next_time)
 
-            # Periodically force GC to reclaim pygplates C++ wrapper objects
-            # that may hold circular references and accumulate between steps.
+            # Collect pyGPlates wrapper cycles at the configured interval.
             self._gc_step_counter += 1
             freq = self._config.gc_collect_frequency
             if freq is not None and self._gc_step_counter % freq == 0:
@@ -432,8 +392,7 @@ class SeafloorAgeTracker:
         reconstructed_points: List,
         delta_time: float,
     ):
-        """Update coordinates from reconstruction, removing inactive points."""
-        # Create boolean mask for active (non-None) points
+        """Update coordinates and remove inactive tracker points."""
         active_mask = np.array([p is not None for p in reconstructed_points], dtype=bool)
         n_active = active_mask.sum()
 
@@ -454,7 +413,6 @@ class SeafloorAgeTracker:
                 new_lats[j], new_lons[j] = point.to_lat_lon()
                 j += 1
 
-        # Update ages using vectorized operation
         self._lats = new_lats
         self._lons = new_lons
         self._ages = self._ages[active_mask] + delta_time
@@ -462,10 +420,8 @@ class SeafloorAgeTracker:
     def _remove_continental_points(self, time: float):
         """Remove points inside continental polygons.
 
-        Continental polygons are reconstructed at the exact requested time
-        using pygplates' full float-precision interpolation (SLERP between
-        rotation pole samples). The ContinentalPolygonCache handles LRU
-        caching to avoid redundant pygplates.reconstruct() calls.
+        PyGPlates interpolates rotation poles at the exact requested age.
+        `ContinentalPolygonCache` reuses recent polygon reconstructions.
         """
         if len(self._lats) == 0:
             return
@@ -483,13 +439,13 @@ class SeafloorAgeTracker:
             logger.debug(f"    Removed {continental_mask.sum()} continental points")
 
     def _add_mor_seeds(self, time: float):
-        """Add new MOR seed points."""
+        """Add zero-age source points along mid-ocean ridges."""
         new_lats, new_lons = generate_mor_seeds(
             time,
             self._topology_features,
             self._rotation_model,
-            ridge_sampling_degrees=self._config.ridge_sampling_degrees,
-            spreading_offset_degrees=self._config.spreading_offset_degrees,
+            ridge_sampling_angle_deg=self._config.ridge_sampling_angle_deg,
+            ridge_offset_angle_deg=self._config.ridge_offset_angle_deg,
         )
 
         if len(new_lats) > 0:
@@ -500,13 +456,12 @@ class SeafloorAgeTracker:
             logger.debug(f"    Added {len(new_lats)} new MOR seed points")
 
     def get_current_state(self) -> PointCloud:
-        """
-        Get current tracers as PointCloud without evolving.
+        """Return the current tracker state without advancing it.
 
         Returns
         -------
         PointCloud
-            Current tracer positions with 'age' property.
+            Current tracker points with an `age` channel.
         """
         if self._lats is None or len(self._lats) == 0:
             return PointCloud(
@@ -517,7 +472,7 @@ class SeafloorAgeTracker:
         # Convert lat/lon to XYZ
         lats_rad = np.radians(self._lats)
         lons_rad = np.radians(self._lons)
-        r = self._config.earth_radius
+        r = self._config.earth_radius_m
 
         x = r * np.cos(lats_rad) * np.cos(lons_rad)
         y = r * np.cos(lats_rad) * np.sin(lons_rad)
@@ -530,80 +485,70 @@ class SeafloorAgeTracker:
             properties={'age': self._ages.copy()}
         )
 
-    def reinitialize(
+    def tracker_rebuild(
         self,
         n_points: Optional[int] = None,
         max_distance_km: Optional[float] = None,
-        k_neighbors: int = 3,
+        neighbor_count: int = 3,
     ) -> PointCloud:
-        """
-        Reinitialize the tracer field with a new sphere mesh.
+        """Rebuild the tracker on a new point distribution.
 
-        Generates a fresh sphere mesh and interpolates ages from existing
-        tracers using inverse distance weighting. Points without nearby tracers
-        (beyond max_distance_km) are dropped.
-
-        This is useful for resampling the ocean when point density becomes
-        uneven due to spreading patterns. The reinitialized points will be
-        assigned plate IDs during the next step_to() call.
+        The method interpolates existing material ages onto new tracker points.
+        It removes target points without a nearby source point.
+        The next `step_to` call assigns plate IDs to the new points.
 
         Parameters
         ----------
         n_points : int, optional
-            Number of points for the mesh. If None, uses config.default_mesh_points.
+            Target point count. If `None`, use `config.tracker_point_count`.
         max_distance_km : float, optional
-            Maximum distance in kilometers to search for neighbors. Points with
-            no neighbors within this distance are dropped (no age data means gap).
-            If None, calculated as 2× the mesh spacing for the given number of points.
-        k_neighbors : int, default=3
-            Number of nearest neighbors for inverse distance weighting.
-            Use k_neighbors=1 for simple nearest-neighbor interpolation.
+            Maximum source separation in kilometres.
+            If `None`, use twice the spacing of the target points.
+        neighbor_count : int, default=3
+            Source-point count for inverse-distance weighting.
 
         Returns
         -------
         PointCloud
-            The reinitialized point cloud with interpolated ages.
+            The rebuilt point cloud with interpolated ages.
 
         Raises
         ------
         RuntimeError
             If tracker is not initialized.
         ValueError
-            If all points are filtered out (max_distance_km too small or no data).
+            If no target point has a source point within `max_distance_km`.
 
         Examples
         --------
         >>> tracker.initialize(starting_age=200)
         >>> tracker.step_to(150)
-        >>> # Reinitialize with higher resolution mesh
-        >>> cloud = tracker.reinitialize(n_points=40000)
+        >>> # Rebuild with more tracker points.
+        >>> cloud = tracker.tracker_rebuild(n_points=40000)
         >>> tracker.step_to(100)  # Continue time-stepping
         """
         if not self._initialized:
             raise RuntimeError(
-                "Must call initialize() or initialize_from_cloud() before reinitialize()"
+                "Call initialize() or initialize_from_cloud() before tracker_rebuild()"
             )
 
         from scipy.spatial import cKDTree
         from .geometry import inverse_distance_weighted_interpolation, compute_mesh_spacing_km
 
-        # Set defaults
         if n_points is None:
-            n_points = self._config.default_mesh_points
+            n_points = self._config.tracker_point_count
 
         if max_distance_km is None:
-            # Default: 2× mesh spacing
             max_distance_km = 2.0 * compute_mesh_spacing_km(n_points)
 
         # Convert max_distance to meters for KDTree queries
         max_distance_m = max_distance_km * 1000.0
 
         logger.info(
-            f"Reinitializing to sphere mesh ({n_points:,} points, "
-            f"max_distance={max_distance_km:.1f} km, k={k_neighbors})..."
+            f"Rebuilding the tracker ({n_points:,} points, "
+            f"max_distance={max_distance_km:.1f} km, k={neighbor_count})..."
         )
 
-        # Check we have existing points
         if len(self._lats) == 0:
             raise ValueError("No existing tracers to interpolate from")
 
@@ -612,7 +557,6 @@ class SeafloorAgeTracker:
         n_mesh = len(mesh_lats)
         logger.debug(f"  Created mesh with {n_mesh} points")
 
-        # Helper function for lat/lon to XYZ conversion
         def latlon_to_xyz(lats, lons, r):
             lats_rad = np.radians(lats)
             lons_rad = np.radians(lons)
@@ -622,14 +566,14 @@ class SeafloorAgeTracker:
             return np.column_stack([x, y, z])
 
         # Convert to XYZ for KDTree
-        current_xyz = latlon_to_xyz(self._lats, self._lons, self._config.earth_radius)
-        mesh_xyz = latlon_to_xyz(mesh_lats, mesh_lons, self._config.earth_radius)
+        current_xyz = latlon_to_xyz(self._lats, self._lons, self._config.earth_radius_m)
+        mesh_xyz = latlon_to_xyz(mesh_lats, mesh_lons, self._config.earth_radius_m)
 
         # Build KDTree from existing tracers
         tree = cKDTree(current_xyz)
 
-        # Handle case where k_neighbors > number of existing points
-        k = min(k_neighbors, len(self._lats))
+        # Do not request more neighbours than available source points.
+        k = min(neighbor_count, len(self._lats))
 
         # Query K nearest neighbors for each mesh point
         distances, indices = tree.query(mesh_xyz, k=k)
@@ -639,9 +583,8 @@ class SeafloorAgeTracker:
             distances = distances.reshape(-1, 1)
             indices = indices.reshape(-1, 1)
 
-        # Determine which mesh points have valid neighbors (within max_distance)
-        # A point is valid if at least one neighbor is within max_distance
-        min_distances = distances[:, 0]  # Distance to nearest neighbor
+        # Retain target points with at least one source point in range.
+        min_distances = distances[:, 0]
         valid_mask = min_distances < max_distance_m
 
         n_valid = valid_mask.sum()
@@ -660,13 +603,11 @@ class SeafloorAgeTracker:
         valid_distances = distances[valid_mask]
         valid_indices = indices[valid_mask]
 
-        # For IDW, only use neighbors within max_distance
-        # Build values array from ages
         ages_for_interp = np.zeros_like(valid_distances)
         for i in range(n_valid):
             ages_for_interp[i] = self._ages[valid_indices[i]]
 
-        # Mask out neighbors beyond max_distance (set distance to inf so they get zero weight)
+        # Infinite distance gives zero weight to out-of-range source points.
         beyond_threshold = valid_distances >= max_distance_m
         valid_distances_masked = valid_distances.copy()
         valid_distances_masked[beyond_threshold] = np.inf
@@ -679,38 +620,9 @@ class SeafloorAgeTracker:
         self._lons = valid_mesh_lons
         self._ages = new_ages
 
-        logger.info(f"  Reinitialized to {len(self._lats)} points")
+        logger.info(f"  Rebuilt the tracker with {len(self._lats)} points")
 
         return self.get_current_state()
-
-    # Keep old name as alias for backwards compatibility
-    def reinitialize_to_mesh(
-        self,
-        n_points: Optional[int] = None,
-        k_neighbors: Optional[int] = None,
-        max_distance: Optional[float] = None,
-    ) -> int:
-        """
-        Deprecated: Use reinitialize() instead.
-
-        This method is kept for backwards compatibility.
-        """
-        import warnings
-        warnings.warn(
-            "reinitialize_to_mesh() is deprecated, use reinitialize() instead",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        # Convert max_distance from meters to km for new API
-        max_distance_km = max_distance / 1000.0 if max_distance is not None else None
-        k = k_neighbors if k_neighbors is not None else 3
-
-        self.reinitialize(
-            n_points=n_points,
-            max_distance_km=max_distance_km,
-            k_neighbors=k,
-        )
-        return len(self._lats)
 
     @property
     def current_age(self) -> Optional[float]:
@@ -723,13 +635,12 @@ class SeafloorAgeTracker:
         return len(self._lats) if self._lats is not None else 0
 
     def save_checkpoint(self, filepath: str) -> None:
-        """
-        Save state to checkpoint file.
+        """Save the tracker state to a checkpoint file.
 
         Parameters
         ----------
         filepath : str
-            Path to save checkpoint (.npz format).
+            Output path for the `.npz` checkpoint.
         """
         from .io_formats import PointCloudCheckpoint
 
@@ -743,15 +654,14 @@ class SeafloorAgeTracker:
             filepath,
             geological_age=self._current_age,
             metadata={
-                'time_step': self._config.time_step,
+                'tracker_step_myr': self._config.tracker_step_myr,
             }
         )
 
         logger.info(f"Saved checkpoint to {filepath} ({self._current_age} Ma)")
 
     def load_checkpoint(self, filepath: str) -> None:
-        """
-        Load state from checkpoint file.
+        """Load the tracker state from a checkpoint file.
 
         Parameters
         ----------
@@ -774,13 +684,12 @@ class SeafloorAgeTracker:
         logger.info(f"  Tracers: {len(self._lats)}")
 
     def get_statistics(self) -> Dict:
-        """
-        Get statistics about current tracer state.
+        """Return statistics for the current material ages.
 
         Returns
         -------
         dict
-            Statistics including mean age, max age, coverage, etc.
+            Point count and the mean, minimum, maximum, and standard deviation.
         """
         if not self._initialized or len(self._ages) == 0:
             return {

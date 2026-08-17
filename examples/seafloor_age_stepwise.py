@@ -71,50 +71,50 @@ output_dir.mkdir(exist_ok=True)
 # TracerConfig controls the simulation parameters. The parameters are grouped
 # into several categories:
 #
-# **Time stepping**: The `time_step` controls how frequently tracers are
+# **Time stepping**: The `tracker_step_myr` controls the tracker step.
 # advected forward in time. Smaller values give more accurate trajectories
 # but increase computation time.
 #
 # **Mesh initialisation**: At the starting age, tracers are placed on a
-# Fibonacci sphere mesh that covers the globe uniformly. The `default_mesh_points`
+# Fibonacci sphere mesh that covers the globe uniformly. The `tracker_point_count`
 # controls the resolution - more points give higher resolution but require
 # more memory and computation.
 #
 # **Initial age calculation**: For the initial ocean tracers (those not
 # born at ridges), ages are estimated based on distance to the nearest
-# ridge divided by half the spreading rate. The `initial_ocean_mean_spreading_rate`
+# ridge divided by half the spreading rate. The `initial_spreading_rate_mm_per_yr`
 # sets this assumed spreading rate.
 #
 # **MOR seed generation**: New tracers are born at mid-ocean ridges (MORs)
-# at each time step. The `ridge_sampling_degrees` controls how densely
-# the ridge is sampled, and `spreading_offset_degrees` offsets new tracers
+# at each time step. The `ridge_sampling_angle_deg` controls how densely
+# the ridge is sampled, and `ridge_offset_angle_deg` offsets new tracers
 # slightly from the ridge axis (to avoid numerical issues at the boundary).
 #
 # **Collision detection**: Tracers are removed when they collide with
-# subduction zones or continental margins. The `velocity_delta_threshold`
+# subduction zones or continental margins. The `collision_velocity_difference_km_per_myr`
 # detects sudden velocity changes (indicating plate boundary crossing),
-# and `distance_threshold_per_myr` sets how close a tracer must be to a
+# and `collision_distance_rate_km_per_myr` sets how close a tracer must be to a
 # boundary to be considered for removal.
 
 # +
 config = TracerConfig(
     # Time stepping
-    time_step=1.0,  # Myr per step
+    tracker_step_myr=1.0,
 
     # Mesh initialisation - number of points on Fibonacci sphere
     # 10000 points gives ~115 km spacing, 40000 gives ~57 km spacing
-    default_mesh_points=10000,
+    tracker_point_count=10000,
 
     # Initial age calculation
-    initial_ocean_mean_spreading_rate=75.0,  # mm/yr
+    initial_spreading_rate_mm_per_yr=75.0,
 
     # MOR seed generation
-    ridge_sampling_degrees=0.5,    # Ridge tessellation (~50 km at equator)
-    spreading_offset_degrees=0.01,  # Offset from ridge (~1 km)
+    ridge_sampling_angle_deg=0.5,
+    ridge_offset_angle_deg=0.01,
 
     # Collision detection thresholds
-    velocity_delta_threshold=7.0,      # km/Myr velocity change to trigger check
-    distance_threshold_per_myr=10.0,   # km/Myr proximity threshold
+    collision_velocity_difference_km_per_myr=7.0,
+    collision_distance_rate_km_per_myr=10.0,
 )
 # -
 
@@ -132,7 +132,7 @@ config = TracerConfig(
 # After creating the tracker, we call `initialize()` with a `starting_age`.
 # This creates an initial set of tracers on a Fibonacci sphere mesh covering the
 # ocean basins. Each tracer's initial age is estimated from its distance to
-# the nearest mid-ocean ridge, divided by half the `initial_ocean_mean_spreading_rate`
+# the nearest ridge, divided by half the `initial_spreading_rate_mm_per_yr`
 # from the configuration. This provides a reasonable first guess for the age
 # structure of oceanic lithosphere at the starting time.
 
@@ -153,7 +153,7 @@ print(f"Initialised {n_tracers} tracers at {starting_age} Ma")
 # ## Stepwise Evolution
 #
 # The `step_to()` method evolves tracers to a target geological age. It handles
-# all the intermediate steps internally (using the configured `time_step`) and
+# all the intermediate steps internally (using `tracker_step_myr`) and
 # returns a PointCloud with the tracer positions and ages at the target time.
 #
 # We'll step through selected ages to demonstrate the evolution:

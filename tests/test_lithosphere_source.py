@@ -1,8 +1,8 @@
 """Tests for LithosphereCloudSource's recipe and control flow.
 
 The tracker, rotator and polygon filter are replaced by fakes. What is under
-test is the recipe — which knobs reach the tracker, when the mesh is
-reinitialised, when a checkpoint is written, what the forward-only contract
+test is the recipe — which parameters reach the tracker, when the tracker is
+rebuilt, when a checkpoint is written, what the forward-only contract
 refuses, and what the returned cloud carries. None of that is pygplates
 behaviour, so none of it needs plate data.
 
@@ -16,7 +16,12 @@ import pytest
 from gtrack import AgeCloudSource, CheckpointPolicy, PointCloud
 from gtrack.config import TracerConfig
 from gtrack.hpc_integration import SeafloorAgeTracker
-from gtrack.lithosphere import LithosphereCloudConfig, LithosphereCloudSource
+from gtrack.lithosphere import (
+    LithosphereCloudConfig,
+    LithosphereCloudSource,
+    OceanicLidWeight,
+    quintic_smoothstep,
+)
 from gtrack.point_rotation import PointRotator
 from gtrack.polygon_filter import PolygonFilter
 
@@ -56,7 +61,7 @@ class FakeTracker:
         cloud.add_property("age", np.array([10.0, 20.0]))
         return cloud
 
-    def reinitialize(self, n_points=None, **kwargs):
+    def tracker_rebuild(self, n_points=None, **kwargs):
         self.reinits.append(n_points)
 
     def save_checkpoint(self, filepath):
@@ -96,9 +101,8 @@ class FakeFilter:
 @pytest.fixture
 def fakes(monkeypatch, bind_signature):
     FakeTracker.instances = []
-    # Each stand-in is bound to the signature of what it replaces, constructor
-    # and methods alike, so a call this suite accepts is one production would
-    # also accept. See conftest.signature_bound for why that is worth a wrapper.
+    # Each stand-in uses the signature of the object that it replaces.
+    # Thus, production accepts each call that this suite accepts.
     monkeypatch.setattr(
         "gtrack.lithosphere.SeafloorAgeTracker",
         bind_signature(SeafloorAgeTracker, FakeTracker),
@@ -112,18 +116,19 @@ def fakes(monkeypatch, bind_signature):
     return FakeTracker
 
 
-def make_source(config=None, continental_data=100.0, oldest_age=400.0,
-                oceanic_amplitude=None):
+def make_source(config=None, continental_data=100.0,
+                plate_model_max_age_ma=400.0,
+                oceanic_weight_from_thickness=None):
     return LithosphereCloudSource(
         rotation_files=["rot.rot"],
         topology_files=["topo.gpml"],
         continental_polygons="cont.shp",
         static_polygons="static.shp",
         continental_data=continental_data,
-        age_to_property=lambda ages: 2.32 * np.sqrt(ages),
-        oldest_age=oldest_age,
+        oceanic_thickness_from_age=lambda ages: 2.32 * np.sqrt(ages),
+        plate_model_max_age_ma=plate_model_max_age_ma,
         config=config,
-        oceanic_amplitude=oceanic_amplitude,
+        oceanic_weight_from_thickness=oceanic_weight_from_thickness,
     )
 
 
@@ -141,6 +146,49 @@ class TestSatisfiesProtocol:
 
     def test_declares_forward_only(self):
         assert LithosphereCloudSource.monotonic_backward is True
+
+
+# ---------------------------------------------------------------------------
+# Oceanic lateral weight
+# ---------------------------------------------------------------------------
+
+class TestOceanicLidWeight:
+    @staticmethod
+    def age_to_thickness(ages):
+        return np.minimum(10.0 * np.sqrt(ages), 100.0)
+
+    def test_quintic_smoothstep_clamps_and_reaches_midpoint(self):
+        result = quintic_smoothstep(np.array([-1.0, 0.0, 0.5, 1.0, 2.0]))
+        np.testing.assert_allclose(result, [0.0, 0.0, 0.5, 1.0, 1.0])
+
+    def test_thresholds_follow_the_age_to_thickness_map(self):
+        weight = OceanicLidWeight(
+            self.age_to_thickness,
+            zero_weight_age_myr=1.0,
+            full_weight_age_myr=25.0,
+        )
+        assert weight.zero_weight_thickness_km == pytest.approx(10.0)
+        assert weight.full_weight_thickness_km == pytest.approx(50.0)
+        np.testing.assert_allclose(
+            weight(np.array([0.0, 10.0, 30.0, 50.0, 100.0])),
+            [0.0, 0.0, 0.5, 1.0, 1.0],
+        )
+
+    def test_rejects_reversed_age_thresholds(self):
+        with pytest.raises(ValueError, match="zero_weight_age_myr must be less"):
+            OceanicLidWeight(
+                self.age_to_thickness,
+                zero_weight_age_myr=25.0,
+                full_weight_age_myr=1.0,
+            )
+
+    def test_rejects_full_weight_at_the_thickness_cap(self):
+        with pytest.raises(ValueError, match="thickness cap"):
+            OceanicLidWeight(
+                self.age_to_thickness,
+                zero_weight_age_myr=1.0,
+                full_weight_age_myr=100.0,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +211,8 @@ class TestLazyConstruction:
             LithosphereCloudSource(
                 rotation_files=[], topology_files=[],
                 continental_polygons=None, static_polygons="s.shp",
-                continental_data=1.0, age_to_property=lambda a: a,
-                oldest_age=400.0,
+                continental_data=1.0, oceanic_thickness_from_age=lambda a: a,
+                plate_model_max_age_ma=400.0,
             )
         assert fakes.instances == []
 
@@ -175,24 +223,15 @@ class TestLazyConstruction:
 
 class TestTracerConfigIsNotShadowed:
     def test_the_exact_object_is_handed_over(self, fakes):
-        tracer = TracerConfig(time_step=2.0, default_mesh_points=12345)
+        tracer = TracerConfig(tracker_step_myr=2.0, tracker_point_count=12345)
         source = make_source(LithosphereCloudConfig(tracer=tracer))
         source.at_age(300.0)
         assert fakes.instances[0].config is tracer
 
-    def test_a_non_default_time_step_survives(self, fakes):
-        # The defect this design removes: a time_step set on the config being
-        # silently discarded in favour of a default.
-        source = make_source(
-            LithosphereCloudConfig(tracer=TracerConfig(time_step=2.0))
-        )
-        source.at_age(300.0)
-        assert fakes.instances[0].config.time_step == 2.0
-
-    def test_reinit_uses_the_tracer_mesh_size(self, fakes):
+    def test_rebuild_uses_the_tracer_mesh_size(self, fakes):
         config = LithosphereCloudConfig(
-            tracer=TracerConfig(default_mesh_points=7777),
-            reinit_interval_myr=50.0,
+            tracer=TracerConfig(tracker_point_count=7777),
+            tracker_rebuild_interval_myr=50.0,
         )
         source = make_source(config)
         source.at_age(390.0)
@@ -219,25 +258,25 @@ class TestCloud:
             assert cloud.get_property(name) is not None
         assert set(cloud.properties) == set(LithosphereCloudSource.provides)
 
-    def test_no_surface_amplitude_by_default(self, fakes):
-        # Without a fade the channel is neither declared nor attached, so the
-        # default cloud is unchanged.
+    def test_no_lateral_weight_by_default(self, fakes):
         source = make_source()
-        assert "surface_amplitude" not in source.provides
+        assert "lateral_weight" not in source.provides
         cloud = source.at_age(300.0)
-        assert "surface_amplitude" not in cloud.properties
+        assert "lateral_weight" not in cloud.properties
 
-    def test_surface_amplitude_fades_ocean_only(self, fakes):
-        # An oceanic fade weakens the ocean seeds (via their thickness) and
-        # pins continents at 1.0; the values are clipped to [0, 1].
-        source = make_source(oceanic_amplitude=lambda thickness_km: thickness_km / 10.0)
-        assert "surface_amplitude" in source.provides
+    def test_lateral_weight_maps_ocean_only(self, fakes):
+        source = make_source(
+            oceanic_weight_from_thickness=lambda thickness_km: thickness_km / 10.0
+        )
+        assert "lateral_weight" in source.provides
         cloud = source.at_age(300.0)
-        amp = cloud.get_property("surface_amplitude")
+        weight = cloud.get_property("lateral_weight")
         # Two ocean seeds first, one continental seed last.
         thickness = cloud.get_property("thickness")
-        np.testing.assert_allclose(amp[:2], np.clip(thickness[:2] / 10.0, 0.0, 1.0))
-        assert amp[-1] == 1.0
+        np.testing.assert_allclose(
+            weight[:2], np.clip(thickness[:2] / 10.0, 0.0, 1.0)
+        )
+        assert weight[-1] == 1.0
 
     def test_ocean_then_continental(self, fakes):
         source = make_source()
@@ -251,7 +290,7 @@ class TestCloud:
 
     def test_continental_seeds_get_the_nominal_age(self, fakes):
         source = make_source(
-            LithosphereCloudConfig(default_continental_age_myr=500.0)
+            LithosphereCloudConfig(continental_material_age_myr=500.0)
         )
         cloud = source.at_age(300.0)
         assert cloud.get_property("age")[-1] == 500.0
@@ -261,8 +300,8 @@ class TestCloud:
             rotation_files=[], topology_files=[],
             continental_polygons="c.shp", static_polygons="s.shp",
             continental_data=100.0,
-            age_to_property=lambda ages: ages * 3.0,
-            oldest_age=400.0,
+            oceanic_thickness_from_age=lambda ages: ages * 3.0,
+            plate_model_max_age_ma=400.0,
         )
         cloud = source.at_age(300.0)
         np.testing.assert_allclose(
@@ -300,49 +339,49 @@ class TestForwardOnly:
         with pytest.raises(ValueError, match="older than the last walked age"):
             source.at_age(300.0)
 
-    def test_walk_start_age_fires_before_any_walking(self, fakes):
-        source = make_source(LithosphereCloudConfig(walk_start_age=250.0))
-        with pytest.raises(ValueError, match="declared walk_start_age"):
+    def test_oldest_requested_age_fires_before_any_walking(self, fakes):
+        source = make_source(LithosphereCloudConfig(oldest_requested_age_ma=250.0))
+        with pytest.raises(ValueError, match="oldest_requested_age_ma"):
             source.validate_age(300.0)
         # Nothing was built, so the refusal really did precede the walk.
         assert fakes.instances == []
 
-    def test_walk_start_age_does_not_permit_revisiting(self, fakes):
-        source = make_source(LithosphereCloudConfig(walk_start_age=400.0))
+    def test_oldest_requested_age_does_not_permit_revisiting(self, fakes):
+        source = make_source(LithosphereCloudConfig(oldest_requested_age_ma=400.0))
         source.at_age(200.0)
         with pytest.raises(ValueError, match="older than the last walked age"):
             source.at_age(300.0)
 
     def test_range_checks(self, fakes):
-        source = make_source(oldest_age=400.0)
+        source = make_source(plate_model_max_age_ma=400.0)
         with pytest.raises(ValueError, match="negative"):
             source.validate_age(-1.0)
         with pytest.raises(ValueError, match="older than the plate model"):
             source.validate_age(500.0)
 
-    def test_walk_start_age_beyond_the_model_is_refused_at_construction(self, fakes):
-        with pytest.raises(ValueError, match="older than the plate model"):
-            make_source(LithosphereCloudConfig(walk_start_age=500.0), oldest_age=400.0)
+    def test_oldest_requested_age_beyond_model_is_refused(self, fakes):
+        with pytest.raises(ValueError, match="exceeds plate_model_max_age_ma"):
+            make_source(
+                LithosphereCloudConfig(oldest_requested_age_ma=500.0),
+                plate_model_max_age_ma=400.0,
+            )
 
 
 # ---------------------------------------------------------------------------
-# Reinit cadence
+# Tracker rebuild cadence
 # ---------------------------------------------------------------------------
 
-class TestReinit:
-    def test_fires_on_the_interval(self, fakes):
-        source = make_source(LithosphereCloudConfig(reinit_interval_myr=50.0))
-        source.at_age(400.0)   # initialises at 400, no reinit
-        source.at_age(360.0)   # 40 < 50
+class TestTrackerRebuild:
+    def test_fires_on_the_interval_and_resets_the_clock(self, fakes):
+        source = make_source(
+            LithosphereCloudConfig(tracker_rebuild_interval_myr=50.0)
+        )
+        source.at_age(400.0)   # Initialises without a tracker rebuild.
+        source.at_age(360.0)   # This is 40 Myr after initialisation.
         assert fakes.instances[0].reinits == []
-        source.at_age(350.0)   # 50 >= 50
+        source.at_age(350.0)   # This reaches the 50 Myr interval.
         assert len(fakes.instances[0].reinits) == 1
-
-    def test_resets_the_clock(self, fakes):
-        source = make_source(LithosphereCloudConfig(reinit_interval_myr=50.0))
-        source.at_age(400.0)
-        source.at_age(350.0)
-        source.at_age(320.0)   # 30 since the reinit at 350
+        source.at_age(320.0)   # This is 30 Myr after the rebuild at 350 Ma.
         assert len(fakes.instances[0].reinits) == 1
         source.at_age(300.0)   # 50 since 350
         assert len(fakes.instances[0].reinits) == 2
@@ -420,10 +459,10 @@ class TestCheckpoints:
 class TestConfig:
     def test_defaults(self):
         config = LithosphereCloudConfig()
-        assert config.reinit_interval_myr == 50.0
+        assert config.tracker_rebuild_interval_myr == 50.0
         assert config.checkpoint is None
-        assert config.default_continental_age_myr == 500.0
-        assert config.walk_start_age is None
+        assert config.continental_material_age_myr == 500.0
+        assert config.oldest_requested_age_ma is None
         assert isinstance(config.tracer, TracerConfig)
 
     def test_each_instance_gets_its_own_tracer(self):
@@ -435,20 +474,20 @@ class TestConfig:
 
         config = LithosphereCloudConfig()
         with pytest.raises(dataclasses.FrozenInstanceError):
-            config.reinit_interval_myr = 10.0
+            config.tracker_rebuild_interval_myr = 10.0
 
     def test_rejects_nonsense(self):
-        with pytest.raises(ValueError, match="reinit_interval_myr must be positive"):
-            LithosphereCloudConfig(reinit_interval_myr=0.0)
-        with pytest.raises(ValueError, match="walk_start_age must be non-negative"):
-            LithosphereCloudConfig(walk_start_age=-1.0)
-        with pytest.raises(ValueError, match="continental_fallback_n must be positive"):
-            LithosphereCloudConfig(continental_fallback_n=0)
+        with pytest.raises(ValueError, match="tracker_rebuild_interval_myr must be positive"):
+            LithosphereCloudConfig(tracker_rebuild_interval_myr=0.0)
+        with pytest.raises(ValueError, match="oldest_requested_age_ma must be non-negative"):
+            LithosphereCloudConfig(oldest_requested_age_ma=-1.0)
+        with pytest.raises(ValueError, match="scalar_continental_point_count must be positive"):
+            LithosphereCloudConfig(scalar_continental_point_count=0)
 
 
 def test_scalar_continental_data_uses_the_fallback_size(fakes):
     source = make_source(
-        LithosphereCloudConfig(continental_fallback_n=512),
+        LithosphereCloudConfig(scalar_continental_point_count=512),
         continental_data=100.0,
     )
     source.at_age(300.0)

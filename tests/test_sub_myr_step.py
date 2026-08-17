@@ -1,15 +1,11 @@
-"""Regression tests for sub-Myr time_step support.
+"""Regression tests for sub-Myr tracker steps.
 
-Prior to the fix, SeafloorAgeTracker.step_to() cast both endpoints and the
-time_increment to int before calling pygplates.TopologicalModel.reconstruct_geometry,
-which silently collapsed any 0 < time_step < 1 to a zero increment and
-triggered "Time increment must be positive." inside pygplates.
+The tracker passes each positive sub-Myr span to the topological model.
 
 These tests exercise:
-  - A clean sub-Myr step (time_step=0.5 over an integer-Ma range).
+  - A clean sub-Myr step over an integer-Ma range.
   - A non-integer step that also leaves a truncated final step shorter than
-    time_step, which the new code handles by passing the actual span as
-    time_increment for that step.
+    the configured tracker step.
 """
 
 import pytest
@@ -40,15 +36,15 @@ def _data_available():
     )
 
 
-def _make_tracker(time_step):
+def _make_tracker(tracker_step_myr):
     config = TracerConfig(
-        time_step=time_step,
-        default_mesh_points=2000,
-        initial_ocean_mean_spreading_rate=75.0,
-        ridge_sampling_degrees=1.0,
-        spreading_offset_degrees=0.01,
-        velocity_delta_threshold=7.0,
-        distance_threshold_per_myr=10.0,
+        tracker_step_myr=tracker_step_myr,
+        tracker_point_count=2000,
+        initial_spreading_rate_mm_per_yr=75.0,
+        ridge_sampling_angle_deg=1.0,
+        ridge_offset_angle_deg=0.01,
+        collision_velocity_difference_km_per_myr=7.0,
+        collision_distance_rate_km_per_myr=10.0,
     )
     return SeafloorAgeTracker(
         rotation_files=ROTATION_FILES,
@@ -60,8 +56,8 @@ def _make_tracker(time_step):
 
 @pytest.mark.skipif(not _data_available(), reason="GPlates data files not found")
 def test_half_myr_step():
-    """time_step=0.5 over an integer-Ma range must run without error."""
-    tracker = _make_tracker(time_step=0.5)
+    """A half-Myr tracker step works over an integer-Ma range."""
+    tracker = _make_tracker(tracker_step_myr=0.5)
     tracker.initialize(starting_age=12)
     cloud = tracker.step_to(10)
 
@@ -71,13 +67,11 @@ def test_half_myr_step():
 
 @pytest.mark.skipif(not _data_available(), reason="GPlates data files not found")
 def test_truncated_final_step():
-    """A non-integer time_step that leaves a partial final step must still work.
+    """A noninteger tracker step can leave a shorter final step.
 
-    starting_age=11.5, target_age=10.0, time_step=0.7 yields steps of
-    0.7, 0.7, 0.1 — the last span is smaller than time_step, exercising
-    the clamp branch of next_time = max(time - time_step, target_age).
+    A 0.7 Myr step from 11.5 Ma to 10 Ma gives spans of 0.7, 0.7, and 0.1 Myr.
     """
-    tracker = _make_tracker(time_step=0.7)
+    tracker = _make_tracker(tracker_step_myr=0.7)
     tracker.initialize(starting_age=11.5)
     cloud = tracker.step_to(10.0)
 

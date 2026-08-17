@@ -1,6 +1,5 @@
-"""Configuration classes for gtrack package."""
+"""Configure gtrack source-point tracking."""
 
-import warnings
 from dataclasses import dataclass
 from typing import Optional
 import numpy as np
@@ -8,166 +7,132 @@ import numpy as np
 
 @dataclass
 class TracerConfig:
-    """
-    Configuration parameters for seafloor age tracking.
+    """Configure seafloor-age tracking.
 
-    Parameters match GPlately's SeafloorGrid for compatibility.
+    The serialized dictionary uses the GPlately keys. The Python attributes use
+    the gtrack vocabulary.
 
     Attributes
     ----------
-    time_step : float
-        Time step size in Myr (default: 1.0)
-    earth_radius : float
-        Earth's radius in meters (default: 6.3781e6)
+    tracker_step_myr : float
+        Tracker step in Myr. The default is 1.0.
+    earth_radius_m : float
+        Earth radius in metres. The default is 6.3781e6.
 
-    Collision Detection (C++ backend)
+    Collision detection
     ----------------------------------
-    velocity_delta_threshold : float
-        Minimum velocity difference to trigger collision check, in km/Myr.
-        Converted to cm/yr (divide by 10) for pygplates C++ API.
-        Default: 7.0 km/Myr (= 0.7 cm/yr)
-    distance_threshold_per_myr : float
-        Base distance threshold for collision detection, in km/Myr.
-        Default: 10.0 km/Myr
+    collision_velocity_difference_km_per_myr : float
+        Minimum velocity difference for collision detection in km/Myr.
+        The default is 7.0 km/Myr.
+    collision_distance_rate_km_per_myr : float
+        Distance rate for collision detection in km/Myr.
+        The default is 10.0 km/Myr.
 
     Initialization
     --------------
-    default_mesh_points : int
-        Number of points for the initial sphere mesh.
-        Default: 10000
-    initial_ocean_mean_spreading_rate : float
-        Mean spreading rate in mm/yr for initial age calculation.
-        Used to compute age = distance / (rate / 2).
-        Default: 75.0 mm/yr (GPlately default)
+    tracker_point_count : int
+        Point count for the initial sphere mesh. The default is 10000.
+    initial_spreading_rate_mm_per_yr : float
+        Mean spreading rate for the initial age calculation in mm/yr.
+        The default is 75.0 mm/yr.
 
-    MOR Seed Generation
+    Mid-ocean-ridge source points
     -------------------
-    ridge_sampling_degrees : float
-        Ridge tessellation resolution in degrees (~50 km at equator).
-        Default: 0.5 degrees
-    spreading_offset_degrees : float
-        Angle to rotate new points off ridge, in degrees.
-        Default: 0.01 degrees (~1 km)
+    ridge_sampling_angle_deg : float
+        Ridge sampling angle in degrees. The default is 0.5 degrees.
+    ridge_offset_angle_deg : float
+        Angular offset from each ridge in degrees. The default is 0.01 degrees.
 
-    Continental Handling
-    --------------------
-    continental_reconstruction_interval : int
-        Deprecated. Previously controlled temporal snapping of continental
-        polygon reconstructions. Continental polygons are now reconstructed
-        at the exact requested time using pygplates' full float-precision
-        interpolation. This parameter is retained for backward compatibility
-        but is no longer used. Setting it to any value other than 1 will
-        emit a deprecation warning.
-
-    Reinitialization
-    ----------------
-    reinit_k_neighbors : int
-        Number of nearest neighbors for interpolation during reinitialization.
-        Default: 6
-    reinit_max_distance : float
-        Maximum distance (meters) for valid interpolation neighbors.
-        Default: None (pi * earth_radius, i.e. half the circumference)
+    Tracker rebuild
+    ---------------
+    tracker_rebuild_neighbor_count : int
+        Source-point count for tracker rebuild interpolation. The default is 6.
+    tracker_rebuild_max_distance_m : float
+        Maximum source separation for a tracker rebuild in metres.
+        The default is half the Earth circumference.
+    gc_collect_frequency : int or None
+        Internal tracker steps between garbage collections. The default is 10.
+        `None` disables scheduled collection.
 
     Examples
     --------
-    >>> # Use default configuration (GPlately-compatible)
     >>> config = TracerConfig()
-    >>>
-    >>> # Custom configuration with higher resolution
     >>> config = TracerConfig(
-    ...     default_mesh_points=40000,    # Higher resolution mesh
-    ...     ridge_sampling_degrees=0.25,  # ~25 km resolution
-    ...     time_step=0.5                 # 0.5 Myr timesteps
+    ...     tracker_point_count=40000,
+    ...     ridge_sampling_angle_deg=0.25,
+    ...     tracker_step_myr=0.5,
     ... )
     """
 
     # Time stepping
-    time_step: float = 1.0  # Myr
-    earth_radius: float = 6.3781e6  # meters
+    tracker_step_myr: float = 1.0
+    earth_radius_m: float = 6.3781e6
 
-    # Collision detection (C++ backend - GPlately compatible)
-    # These are passed to pygplates.ReconstructedGeometryTimeSpan.DefaultDeactivatePoints
-    velocity_delta_threshold: float = 7.0  # km/Myr (converted to 0.7 cm/yr for API)
-    distance_threshold_per_myr: float = 10.0  # km/Myr
+    # GPlately passes these values to its collision detector.
+    collision_velocity_difference_km_per_myr: float = 7.0
+    collision_distance_rate_km_per_myr: float = 10.0
 
-    # Initialization - sphere mesh
-    default_mesh_points: int = 10000
-    initial_ocean_mean_spreading_rate: float = 75.0  # mm/yr (GPlately default)
+    # Initial sphere mesh
+    tracker_point_count: int = 10000
+    initial_spreading_rate_mm_per_yr: float = 75.0
 
-    # MOR seed generation
-    ridge_sampling_degrees: float = 0.5  # ~50 km at equator
-    spreading_offset_degrees: float = 0.01  # ~1 km offset from ridge
+    # Mid-ocean-ridge source points
+    ridge_sampling_angle_deg: float = 0.5
+    ridge_offset_angle_deg: float = 0.01
 
-    # Continental polygon reconstruction (deprecated — no longer used)
-    continental_reconstruction_interval: int = 1
-
-    # Reinitialization parameters
-    reinit_k_neighbors: int = 6
-    reinit_max_distance: Optional[float] = None  # defaults to pi * earth_radius in __post_init__
+    # Tracker rebuild
+    tracker_rebuild_neighbor_count: int = 6
+    tracker_rebuild_max_distance_m: Optional[float] = None
 
     # Garbage collection
-    gc_collect_frequency: Optional[int] = 10  # call gc.collect() every N internal steps; None disables
+    gc_collect_frequency: Optional[int] = 10
 
     def __post_init__(self):
         """Validate configuration parameters."""
-        if self.time_step <= 0:
-            raise ValueError(f"time_step must be positive, got {self.time_step}")
-        if self.earth_radius <= 0:
-            raise ValueError(f"earth_radius must be positive, got {self.earth_radius}")
-        if self.velocity_delta_threshold < 0:
+        if self.tracker_step_myr <= 0:
             raise ValueError(
-                f"velocity_delta_threshold must be non-negative, "
-                f"got {self.velocity_delta_threshold}"
+                f"tracker_step_myr must be positive, got {self.tracker_step_myr}"
             )
-        if self.distance_threshold_per_myr < 0:
+        if self.earth_radius_m <= 0:
+            raise ValueError(f"earth_radius_m must be positive, got {self.earth_radius_m}")
+        if self.collision_velocity_difference_km_per_myr < 0:
             raise ValueError(
-                f"distance_threshold_per_myr must be non-negative, "
-                f"got {self.distance_threshold_per_myr}"
+                "collision_velocity_difference_km_per_myr must be non-negative, "
+                f"got {self.collision_velocity_difference_km_per_myr}"
             )
-        if self.default_mesh_points < 1:
+        if self.collision_distance_rate_km_per_myr < 0:
             raise ValueError(
-                f"default_mesh_points must be at least 1, "
-                f"got {self.default_mesh_points}"
+                "collision_distance_rate_km_per_myr must be non-negative, "
+                f"got {self.collision_distance_rate_km_per_myr}"
             )
-        if self.initial_ocean_mean_spreading_rate <= 0:
+        if self.tracker_point_count < 1:
             raise ValueError(
-                f"initial_ocean_mean_spreading_rate must be positive, "
-                f"got {self.initial_ocean_mean_spreading_rate}"
+                f"tracker_point_count must be at least 1, got {self.tracker_point_count}"
             )
-        if self.ridge_sampling_degrees <= 0:
+        if self.initial_spreading_rate_mm_per_yr <= 0:
             raise ValueError(
-                f"ridge_sampling_degrees must be positive, "
-                f"got {self.ridge_sampling_degrees}"
+                "initial_spreading_rate_mm_per_yr must be positive, "
+                f"got {self.initial_spreading_rate_mm_per_yr}"
             )
-        if self.spreading_offset_degrees <= 0:
+        if self.ridge_sampling_angle_deg <= 0:
             raise ValueError(
-                f"spreading_offset_degrees must be positive, "
-                f"got {self.spreading_offset_degrees}"
+                f"ridge_sampling_angle_deg must be positive, got {self.ridge_sampling_angle_deg}"
             )
-        if self.continental_reconstruction_interval < 1:
+        if self.ridge_offset_angle_deg <= 0:
             raise ValueError(
-                f"continental_reconstruction_interval must be at least 1, "
-                f"got {self.continental_reconstruction_interval}"
+                f"ridge_offset_angle_deg must be positive, got {self.ridge_offset_angle_deg}"
             )
-        if self.continental_reconstruction_interval != 1:
-            warnings.warn(
-                "continental_reconstruction_interval is deprecated and no longer "
-                "used. Continental polygons are now reconstructed at the exact "
-                "requested time. This parameter will be removed in a future release.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-        if self.reinit_k_neighbors < 1:
+        if self.tracker_rebuild_neighbor_count < 1:
             raise ValueError(
-                f"reinit_k_neighbors must be at least 1, "
-                f"got {self.reinit_k_neighbors}"
+                "tracker_rebuild_neighbor_count must be at least 1, "
+                f"got {self.tracker_rebuild_neighbor_count}"
             )
-        if self.reinit_max_distance is None:
-            self.reinit_max_distance = np.pi * self.earth_radius
-        if self.reinit_max_distance <= 0:
+        if self.tracker_rebuild_max_distance_m is None:
+            self.tracker_rebuild_max_distance_m = np.pi * self.earth_radius_m
+        if self.tracker_rebuild_max_distance_m <= 0:
             raise ValueError(
-                f"reinit_max_distance must be positive, "
-                f"got {self.reinit_max_distance}"
+                "tracker_rebuild_max_distance_m must be positive, "
+                f"got {self.tracker_rebuild_max_distance_m}"
             )
         if self.gc_collect_frequency is not None and self.gc_collect_frequency < 1:
             raise ValueError(
@@ -176,43 +141,42 @@ class TracerConfig:
             )
 
     @property
-    def velocity_delta_threshold_cm_yr(self) -> float:
+    def collision_velocity_difference_cm_per_yr(self) -> float:
         """
-        Velocity threshold in cm/yr for pygplates C++ API.
+        Return the collision velocity difference in cm/yr.
 
-        The C++ API expects cm/yr, while we store km/Myr for readability.
-        Conversion: 1 km/Myr = 0.1 cm/yr
+        The GPlately API uses cm/yr. One km/Myr equals 0.1 cm/yr.
         """
-        return self.velocity_delta_threshold / 10.0
+        return self.collision_velocity_difference_km_per_myr / 10.0
 
     def to_dict(self) -> dict:
         """
-        Convert configuration to dictionary.
+        Return a dictionary with GPlately-compatible keys.
 
         Returns
         -------
         dict
-            Configuration as dictionary
+            Configuration with the external GPlately vocabulary.
         """
         return {
-            'time_step': self.time_step,
-            'earth_radius': self.earth_radius,
-            'velocity_delta_threshold': self.velocity_delta_threshold,
-            'distance_threshold_per_myr': self.distance_threshold_per_myr,
-            'default_mesh_points': self.default_mesh_points,
-            'initial_ocean_mean_spreading_rate': self.initial_ocean_mean_spreading_rate,
-            'ridge_sampling_degrees': self.ridge_sampling_degrees,
-            'spreading_offset_degrees': self.spreading_offset_degrees,
-            'continental_reconstruction_interval': self.continental_reconstruction_interval,
-            'reinit_k_neighbors': self.reinit_k_neighbors,
-            'reinit_max_distance': self.reinit_max_distance,
+            'time_step': self.tracker_step_myr,
+            'earth_radius': self.earth_radius_m,
+            'velocity_delta_threshold': self.collision_velocity_difference_km_per_myr,
+            'distance_threshold_per_myr': self.collision_distance_rate_km_per_myr,
+            'default_mesh_points': self.tracker_point_count,
+            'initial_ocean_mean_spreading_rate': self.initial_spreading_rate_mm_per_yr,
+            'ridge_sampling_degrees': self.ridge_sampling_angle_deg,
+            'spreading_offset_degrees': self.ridge_offset_angle_deg,
+            'continental_reconstruction_interval': 1,
+            'reinit_k_neighbors': self.tracker_rebuild_neighbor_count,
+            'reinit_max_distance': self.tracker_rebuild_max_distance_m,
             'gc_collect_frequency': self.gc_collect_frequency,
         }
 
     @classmethod
     def from_dict(cls, config_dict: dict):
         """
-        Create configuration from dictionary.
+        Create a configuration from a GPlately-compatible dictionary.
 
         Parameters
         ----------
@@ -224,8 +188,29 @@ class TracerConfig:
         TracerConfig
             Configuration object
         """
-        d = dict(config_dict)
-        cri = d.get('continental_reconstruction_interval', 1)
+        external_to_internal = {
+            'time_step': 'tracker_step_myr',
+            'earth_radius': 'earth_radius_m',
+            'velocity_delta_threshold': 'collision_velocity_difference_km_per_myr',
+            'distance_threshold_per_myr': 'collision_distance_rate_km_per_myr',
+            'default_mesh_points': 'tracker_point_count',
+            'initial_ocean_mean_spreading_rate': 'initial_spreading_rate_mm_per_yr',
+            'ridge_sampling_degrees': 'ridge_sampling_angle_deg',
+            'spreading_offset_degrees': 'ridge_offset_angle_deg',
+            'reinit_k_neighbors': 'tracker_rebuild_neighbor_count',
+            'reinit_max_distance': 'tracker_rebuild_max_distance_m',
+        }
+        d = {
+            external_to_internal.get(name, name): value
+            for name, value in config_dict.items()
+            if name != 'continental_reconstruction_interval'
+        }
+        cri = config_dict.get('continental_reconstruction_interval', 1)
+        if not isinstance(cri, int) or isinstance(cri, bool) or cri < 1:
+            raise ValueError(
+                "continental_reconstruction_interval must be a positive integer, "
+                f"got {cri!r}"
+            )
         if cri != 1:
             import logging
             logging.getLogger('gtrack.config').warning(
@@ -234,5 +219,4 @@ class TracerConfig:
                 "polygons are now reconstructed at exact float times. "
                 "The value will be reset to 1.", cri
             )
-            d['continental_reconstruction_interval'] = 1
         return cls(**d)

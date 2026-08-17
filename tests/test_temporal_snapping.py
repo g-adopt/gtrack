@@ -141,32 +141,16 @@ class TestExactFloatTimeReconstruction:
             )
 
 
-class TestDeprecationWarning:
-    """Verify that deprecated continental_reconstruction_interval emits warnings."""
+class TestGPlatelyIntervalKey:
+    """Verify the isolated GPlately compatibility key."""
 
-    def test_default_no_warning(self, recwarn):
-        """Default value (1) does not emit a deprecation warning."""
-        TracerConfig()
-        deprecation_warnings = [
-            w for w in recwarn if issubclass(w.category, DeprecationWarning)
-        ]
-        assert len(deprecation_warnings) == 0
+    def test_internal_config_omits_external_field(self):
+        assert "continental_reconstruction_interval" not in (
+            TracerConfig.__dataclass_fields__
+        )
 
-    def test_nondefault_emits_warning(self):
-        """Setting continental_reconstruction_interval != 1 emits DeprecationWarning."""
-        with pytest.warns(DeprecationWarning, match="continental_reconstruction_interval"):
-            TracerConfig(continental_reconstruction_interval=5)
-
-    def test_value_still_accepted(self):
-        """Non-default value is accepted (not an error), just warns."""
-        with pytest.warns(DeprecationWarning):
-            config = TracerConfig(continental_reconstruction_interval=10)
-        assert config.continental_reconstruction_interval == 10
-
-    def test_zero_still_invalid(self):
-        """Value < 1 still raises ValueError."""
-        with pytest.raises(ValueError, match="continental_reconstruction_interval"):
-            TracerConfig(continental_reconstruction_interval=0)
+    def test_to_dict_emits_constant_external_value(self):
+        assert TracerConfig().to_dict()["continental_reconstruction_interval"] == 1
 
     def test_from_dict_resets_old_interval(self):
         """from_dict with old interval value resets to 1."""
@@ -176,12 +160,17 @@ class TestDeprecationWarning:
         }
 
         config = TracerConfig.from_dict(old_config)
-        assert config.continental_reconstruction_interval == 1
+        assert config.tracker_step_myr == 1.0
 
     def test_from_dict_default_interval_no_reset(self):
         """from_dict with interval=1 does not modify anything."""
         config = TracerConfig.from_dict({'continental_reconstruction_interval': 1})
-        assert config.continental_reconstruction_interval == 1
+        assert "continental_reconstruction_interval" not in config.__dataclass_fields__
+
+    @pytest.mark.parametrize("value", [0, -1, 1.5, "1", True])
+    def test_from_dict_rejects_invalid_interval(self, value):
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            TracerConfig.from_dict({'continental_reconstruction_interval': value})
 
 
 class TestCacheHandlesFloatTimes:

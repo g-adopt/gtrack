@@ -167,7 +167,9 @@ def test_indicator_source_uniform_coverage_at_50ma():
 
     rotator = PointRotator(rotation_files=ROTATION_FILES, topology_files=TOPOLOGY_FILES)
     bg_n = 40000
-    src = build_indicator_source(seeds, rotator, target_age=50.0, background_n=bg_n)
+    src = build_indicator_source(
+        seeds, rotator, target_age=50.0, background_point_count=bg_n
+    )
 
     # All seeds present (first n_seeds rows), thickness intact.
     np.testing.assert_array_equal(

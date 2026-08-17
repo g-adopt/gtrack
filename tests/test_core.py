@@ -13,46 +13,45 @@ class TestTracerConfig:
         """Test default configuration."""
         config = TracerConfig()
 
-        assert config.time_step == 1.0
-        assert config.earth_radius == 6.3781e6
-        assert config.velocity_delta_threshold == 7.0
-        assert config.distance_threshold_per_myr == 10.0
-        assert config.default_mesh_points == 10000
-        assert config.initial_ocean_mean_spreading_rate == 75.0
-        assert config.ridge_sampling_degrees == 0.5
-        assert config.spreading_offset_degrees == 0.01
+        assert config.tracker_step_myr == 1.0
+        assert config.earth_radius_m == 6.3781e6
+        assert config.collision_velocity_difference_km_per_myr == 7.0
+        assert config.collision_distance_rate_km_per_myr == 10.0
+        assert config.tracker_point_count == 10000
+        assert config.initial_spreading_rate_mm_per_yr == 75.0
+        assert config.ridge_sampling_angle_deg == 0.5
+        assert config.ridge_offset_angle_deg == 0.01
 
     def test_custom_config(self):
         """Test custom configuration."""
         config = TracerConfig(
-            time_step=0.5,
-            default_mesh_points=40000,
-            ridge_sampling_degrees=0.25
+            tracker_step_myr=0.5,
+            tracker_point_count=40000,
+            ridge_sampling_angle_deg=0.25
         )
 
-        assert config.time_step == 0.5
-        assert config.default_mesh_points == 40000
-        assert config.ridge_sampling_degrees == 0.25
+        assert config.tracker_step_myr == 0.5
+        assert config.tracker_point_count == 40000
+        assert config.ridge_sampling_angle_deg == 0.25
         # Other values should be defaults
-        assert config.velocity_delta_threshold == 7.0
+        assert config.collision_velocity_difference_km_per_myr == 7.0
 
     def test_config_validation(self):
         """Test configuration validation."""
-        # Negative time_step should raise error
-        with pytest.raises(ValueError, match="time_step"):
-            TracerConfig(time_step=-1)
+        with pytest.raises(ValueError, match="tracker_step_myr"):
+            TracerConfig(tracker_step_myr=-1)
 
         # Zero mesh points should raise error
-        with pytest.raises(ValueError, match="default_mesh_points"):
-            TracerConfig(default_mesh_points=0)
+        with pytest.raises(ValueError, match="tracker_point_count"):
+            TracerConfig(tracker_point_count=0)
 
         # Non-positive spreading rate should raise error
-        with pytest.raises(ValueError, match="initial_ocean_mean_spreading_rate"):
-            TracerConfig(initial_ocean_mean_spreading_rate=0)
+        with pytest.raises(ValueError, match="initial_spreading_rate_mm_per_yr"):
+            TracerConfig(initial_spreading_rate_mm_per_yr=0)
 
     def test_config_to_dict(self):
         """Test conversion to dictionary."""
-        config = TracerConfig(time_step=0.5)
+        config = TracerConfig(tracker_step_myr=0.5)
         config_dict = config.to_dict()
 
         assert isinstance(config_dict, dict)
@@ -68,15 +67,15 @@ class TestTracerConfig:
         }
         config = TracerConfig.from_dict(config_dict)
 
-        assert config.time_step == 0.5
-        assert config.default_mesh_points == 40000
+        assert config.tracker_step_myr == 0.5
+        assert config.tracker_point_count == 40000
 
     def test_velocity_threshold_conversion(self):
         """Test velocity threshold unit conversion property."""
-        config = TracerConfig(velocity_delta_threshold=7.0)
+        config = TracerConfig(collision_velocity_difference_km_per_myr=7.0)
 
         # 7.0 km/Myr should convert to 0.7 cm/yr
-        assert config.velocity_delta_threshold_cm_yr == 0.7
+        assert config.collision_velocity_difference_cm_per_yr == 0.7
 
 
 class TestMeshGeneration:

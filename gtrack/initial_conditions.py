@@ -30,7 +30,7 @@ def compute_initial_ages(
     ocean_points: pygplates.MultiPointOnSphere,
     resolved_topologies: List,
     shared_boundary_sections: List,
-    initial_ocean_mean_spreading_rate: float = 75.0,
+    initial_spreading_rate_mm_per_yr: float = 75.0,
     fill_value: float = 5000.0,
     age_distance_law: Optional[Callable[[np.ndarray, float], np.ndarray]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -48,7 +48,7 @@ def compute_initial_ages(
         Resolved topologies from pygplates.resolve_topologies().
     shared_boundary_sections : list
         Shared boundary sections from pygplates.resolve_topologies().
-    initial_ocean_mean_spreading_rate : float, default=75.0
+    initial_spreading_rate_mm_per_yr : float, default=75.0
         Mean spreading rate in mm/yr (numerically equal to km/Myr).
         Default is GPlately's value of 75 mm/yr.
     fill_value : float, default=5000.0
@@ -157,9 +157,9 @@ def compute_initial_ages(
 
     # Compute ages using provided or default formula
     if age_distance_law is not None:
-        ages = age_distance_law(distances, initial_ocean_mean_spreading_rate)
+        ages = age_distance_law(distances, initial_spreading_rate_mm_per_yr)
     else:
-        ages = default_age_distance_law(distances, initial_ocean_mean_spreading_rate)
+        ages = default_age_distance_law(distances, initial_spreading_rate_mm_per_yr)
 
     return lons, lats, ages
 
@@ -200,7 +200,7 @@ def compute_initial_ages_kdtree(
     ocean_lons: np.ndarray,
     ridge_lats: np.ndarray,
     ridge_lons: np.ndarray,
-    initial_ocean_mean_spreading_rate: float = 75.0,
+    initial_spreading_rate_mm_per_yr: float = 75.0,
     earth_radius_km: float = 6371.0,
     age_distance_law: Optional[Callable[[np.ndarray, float], np.ndarray]] = None,
 ) -> np.ndarray:
@@ -220,7 +220,7 @@ def compute_initial_ages_kdtree(
         Ridge point latitudes in degrees.
     ridge_lons : np.ndarray
         Ridge point longitudes in degrees.
-    initial_ocean_mean_spreading_rate : float, default=75.0
+    initial_spreading_rate_mm_per_yr : float, default=75.0
         Mean spreading rate in mm/yr.
     earth_radius_km : float, default=6371.0
         Earth radius in km.
@@ -263,8 +263,8 @@ def compute_initial_ages_kdtree(
 
     # Compute ages
     if age_distance_law is not None:
-        ages = age_distance_law(distances_km, initial_ocean_mean_spreading_rate)
+        ages = age_distance_law(distances_km, initial_spreading_rate_mm_per_yr)
     else:
-        ages = default_age_distance_law(distances_km, initial_ocean_mean_spreading_rate)
+        ages = default_age_distance_law(distances_km, initial_spreading_rate_mm_per_yr)
 
     return ages

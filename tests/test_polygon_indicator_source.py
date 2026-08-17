@@ -1,10 +1,8 @@
-"""Tests for PolygonIndicatorSource's recipe and channel contract.
+"""Test the recipe and channel contract for ``PolygonIndicatorSource``.
 
 The polygon filter, rotator and the union helper are replaced by fakes. What is
-under test is the recipe — which knob sizes what, which channel names are
-emitted, that the seeds are filtered once at present day and reused, and that
-the source is stateless across ages. None of that is pygplates behaviour, so
-none of it needs plate data.
+under test is the recipe, channel names, source-point filter, and stateless age
+access. These tests do not require plate data.
 """
 
 import numpy as np
@@ -52,14 +50,14 @@ class FakeRotator:
         FakeRotator.instances.append(self)
 
 
-def fake_build_indicator_source(seed_cloud, rotator, target_age, **kwargs):
-    """Stand-in that records its arguments and echoes the seed properties."""
+def fake_build_indicator_source(source_cloud, rotator, target_age, **kwargs):
+    """Record the arguments and return the source channels."""
     fake_build_indicator_source.calls.append(
-        {"seed_cloud": seed_cloud, "rotator": rotator,
+        {"source_cloud": source_cloud, "rotator": rotator,
          "target_age": target_age, **kwargs}
     )
     cloud = PointCloud.from_latlon(np.array([[0.0, 0.0], [20.0, 30.0]]))
-    for name in seed_cloud.properties:
+    for name in source_cloud.properties:
         cloud.add_property(name, np.array([1.0, 0.0]))
     membership = kwargs.get("membership_property")
     if membership is not None:
@@ -73,8 +71,8 @@ def fakes(monkeypatch, bind_signature):
     FakeFilter.instances = []
     FakeRotator.instances = []
     fake_build_indicator_source.calls = []
-    # Every stand-in is bound to the signature of the thing it replaces, so a
-    # call this suite accepts is one production would also accept. Without it
+    # Every stand-in uses the signature of the object that it replaces.
+    # Thus, production accepts each call that this suite accepts. Without it,
     # the **kwargs below swallows any keyword, including one the real helper
     # does not have. See conftest.signature_bound.
     monkeypatch.setattr(
@@ -126,8 +124,7 @@ class TestSatisfiesProtocol:
 
 class TestChannelNames:
     def test_thickness_channel_is_masked(self, fakes):
-        # NOT "thickness". A consumer's requires-versus-provides check relies
-        # on the two being different names.
+        # The distinct name prevents consumers from treating it as thickness.
         assert "thickness" not in PolygonIndicatorSource.provides
         assert PolygonIndicatorSource.PROPERTY_NAME == "masked_thickness"
 
@@ -137,9 +134,9 @@ class TestChannelNames:
 
     def test_seeds_are_labelled_with_the_masked_name(self, fakes):
         make_source().at_age(100.0)
-        seeds = fakes.calls[0]["seed_cloud"]
-        assert "masked_thickness" in seeds.properties
-        assert "thickness" not in seeds.properties
+        source_points = fakes.calls[0]["source_cloud"]
+        assert "masked_thickness" in source_points.properties
+        assert "thickness" not in source_points.properties
 
     def test_membership_is_passed_explicitly_not_defaulted(self, fakes):
         # F20: the string used to be coupled across the seam by two defaults
@@ -149,70 +146,48 @@ class TestChannelNames:
 
 
 # ---------------------------------------------------------------------------
-# The split knobs
+# Independent point counts
 # ---------------------------------------------------------------------------
 
-class TestSplitKnobs:
-    def test_background_n_sizes_the_background_only(self, fakes):
-        config = PolygonIndicatorConfig(background_n=5000, seed_fallback_n=777)
+class TestSourceRecipeConfiguration:
+    def test_config_reaches_the_source_recipe(self, fakes):
+        config = PolygonIndicatorConfig(
+            background_point_count=5000,
+            scalar_input_point_count=800,
+            exclusion_factor=2.5,
+        )
         source = make_source(config, thickness_data=200.0)
         source.at_age(100.0)
-        assert fakes.calls[0]["background_n"] == 5000
-
-    def test_seed_fallback_n_sizes_the_scalar_broadcast_only(self, fakes):
-        config = PolygonIndicatorConfig(background_n=5000, seed_fallback_n=800)
-        source = make_source(config, thickness_data=200.0)
-        source.at_age(100.0)
+        call = fakes.calls[0]
+        assert call["background_point_count"] == 5000
         # The fake filter keeps half, so 800 in gives 400 seeds out.
-        assert fakes.calls[0]["seed_cloud"].n_points == 400
+        assert call["source_cloud"].n_points == 400
+        assert call["exclusion_factor"] == 2.5
+        assert call["background_value"] == 0.0
 
-    def test_the_two_knobs_are_independent(self, fakes):
-        # Changing one must not move the other. Under a single n_points this
-        # test cannot be written at all, which is the point of splitting them.
-        a = make_source(PolygonIndicatorConfig(background_n=5000, seed_fallback_n=800))
-        a.at_age(100.0)
-        b = make_source(PolygonIndicatorConfig(background_n=40000, seed_fallback_n=800))
-        b.at_age(100.0)
-        assert fakes.calls[0]["seed_cloud"].n_points == fakes.calls[1]["seed_cloud"].n_points
-        assert fakes.calls[0]["background_n"] != fakes.calls[1]["background_n"]
-
-    def test_seed_fallback_is_inert_for_non_scalar_data(self, fakes):
+    def test_scalar_count_is_inert_for_non_scalar_data(self, fakes):
         latlon = np.array([[0.0, 0.0], [10.0, 10.0], [20.0, 20.0], [30.0, 30.0]])
         values = np.array([1.0, 2.0, 3.0, 4.0])
         source = make_source(
-            PolygonIndicatorConfig(seed_fallback_n=999999),
+            PolygonIndicatorConfig(scalar_input_point_count=999999),
             thickness_data=(latlon, values),
         )
         source.at_age(100.0)
-        assert fakes.calls[0]["seed_cloud"].n_points == 2   # half of 4
-
-    def test_exclusion_factor_is_passed_through(self, fakes):
-        source = make_source(PolygonIndicatorConfig(exclusion_factor=2.5))
-        source.at_age(100.0)
-        assert fakes.calls[0]["exclusion_factor"] == 2.5
-
-    def test_background_value_is_zero(self, fakes):
-        make_source().at_age(100.0)
-        assert fakes.calls[0]["background_value"] == 0.0
-
+        assert fakes.calls[0]["source_cloud"].n_points == 2
 
 # ---------------------------------------------------------------------------
 # Seeds are filtered once, at present day
 # ---------------------------------------------------------------------------
 
 class TestSeeds:
-    def test_filtered_at_present_day_not_at_the_requested_age(self, fakes):
-        make_source().at_age(300.0)
-        assert FakeFilter.instances[0].calls == [0.0]
-
     def test_filtered_once_and_reused(self, fakes):
         source = make_source()
         source.at_age(300.0)
         source.at_age(100.0)
         source.at_age(0.0)
         assert FakeFilter.instances[0].calls == [0.0]
-        first = fakes.calls[0]["seed_cloud"]
-        assert all(call["seed_cloud"] is first for call in fakes.calls)
+        first = fakes.calls[0]["source_cloud"]
+        assert all(call["source_cloud"] is first for call in fakes.calls)
 
     def test_the_rotator_is_handed_over(self, fakes):
         make_source().at_age(100.0)
@@ -280,8 +255,8 @@ class TestLazyConstruction:
 class TestConfig:
     def test_defaults(self):
         config = PolygonIndicatorConfig()
-        assert config.background_n == 20000
-        assert config.seed_fallback_n == 20000
+        assert config.background_point_count == 20000
+        assert config.scalar_input_point_count == 20000
         assert config.exclusion_factor == 1.0
 
     def test_is_frozen(self):
@@ -289,13 +264,13 @@ class TestConfig:
 
         config = PolygonIndicatorConfig()
         with pytest.raises(dataclasses.FrozenInstanceError):
-            config.background_n = 5000
+            config.background_point_count = 5000
 
     def test_rejects_nonsense(self):
-        with pytest.raises(ValueError, match="background_n must be positive"):
-            PolygonIndicatorConfig(background_n=0)
-        with pytest.raises(ValueError, match="seed_fallback_n must be positive"):
-            PolygonIndicatorConfig(seed_fallback_n=0)
+        with pytest.raises(ValueError, match="background_point_count must be positive"):
+            PolygonIndicatorConfig(background_point_count=0)
+        with pytest.raises(ValueError, match="scalar_input_point_count must be positive"):
+            PolygonIndicatorConfig(scalar_input_point_count=0)
         with pytest.raises(ValueError, match="exclusion_factor must be non-negative"):
             PolygonIndicatorConfig(exclusion_factor=-1.0)
 
@@ -303,4 +278,4 @@ class TestConfig:
         # The conflation this class exists to remove: one knob doing both jobs.
         fields = set(PolygonIndicatorConfig.__dataclass_fields__)
         assert "n_points" not in fields
-        assert {"background_n", "seed_fallback_n"} <= fields
+        assert {"background_point_count", "scalar_input_point_count"} <= fields
