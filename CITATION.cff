@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "gtrack: GPlates-based Tracking of Lithosphere and Kinematics"
+abstract: >-
+  A Python package for computing lithospheric structure through geological
+  time using plate tectonic reconstructions. It uses pygplates to track
+  seafloor ages by Lagrangian particle tracking, to advect continental points
+  with topological plate models, and to build labelled point clouds of
+  lithospheric properties for geodynamic models such as G-ADOPT.
+authors:
+  - family-names: Ghelichkhan
+    given-names: Sia
+    email: siavash.ghelichkhan@anu.edu.au
+    affiliation: Australian National University
+    orcid: "https://orcid.org/0000-0002-1316-3170"
+repository-code: "https://github.com/g-adopt/gtrack"
+url: "https://gtrack.gadopt.org"
+license: MIT
+keywords:
+  - plate tectonics
+  - seafloor age
+  - geodynamics
+  - lithosphere
+  - kinematics
+  - pygplates
