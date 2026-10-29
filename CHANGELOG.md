@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+`PolygonIndicatorConfig` has two new fields, `rotation` and `rigid_missing_plate`.
+
+The default value of `rotation` is `"topological"`, and the output does not change.
+In this mode, each source point moves with the plate that contains it at each time step.
+A point near an active margin can then change plate and follow an oceanic plate.
+
+If you set `rotation="rigid_plate_id"`, each source point moves rigidly with the plate ID
+of the polygon that contains it at the present day. The points then move like the polygons
+that `pygplates.reconstruct` rotates. This mode has these rules:
+
+- A source point is removed at an age older than the begin age of its polygon.
+- The mode ignores deforming networks.
+- The plate ID of a polygon can be missing from the rotation tree at the target age.
+  By default, `rigid_missing_plate="in_place"` keeps the source point where it is.
+  The source logs one warning with the number of such points.
+- If you set `rigid_missing_plate="topological_plate"`, such a point follows the plate
+  that contains it at 0 Ma in the topological model. The choice is made again at every age.
+  A point follows its own plate while that plate has a rotation sequence.
+- The plate ID 0 of a polygon counts as missing. If you use `"in_place"`, the mode
+  raises an error for plate ID 0, as in the craton shapefile. If you use
+  `"topological_plate"`, the mode accepts such polygons.
+
 ## 0.7.0 — 2026-08-17
 
 ### Changed

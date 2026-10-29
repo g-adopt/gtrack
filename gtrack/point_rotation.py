@@ -603,6 +603,12 @@ def _get_plate_ids(
 # topological advection equals rigid rotation when fed the topology's own plate
 # ids (the decisive Phase 0 consistency check). Do NOT rewire them into
 # `rotate` — that would resurrect the drop/mismatch bug.
+#
+# One exception: `_rotate_points_batch` is also used by the opt-in
+# `rotation="rigid_plate_id"` mode of `PolygonIndicatorSource` (gtrack/sources.py).
+# That mode does not use `_move_points_batched`, because its three-argument
+# `get_rotation(to_age, plate_id, from_age)` returns the identity for a plate that
+# is missing from the tree at `from_age`.
 # =============================================================================
 
 
