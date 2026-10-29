@@ -122,6 +122,14 @@ class TestSatisfiesProtocol:
 # The channel names — this is D4
 # ---------------------------------------------------------------------------
 
+class TestDefaultRotationCall:
+    def test_default_call_passes_no_rigid_arguments(self, fakes):
+        make_source().at_age(10.0)
+        call = fakes.calls[0]
+        for name in ("rotation", "seed_plate_ids", "seed_begin_ages"):
+            assert name not in call
+
+
 class TestChannelNames:
     def test_thickness_channel_is_masked(self, fakes):
         # The distinct name prevents consumers from treating it as thickness.
